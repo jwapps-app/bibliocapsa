@@ -1,69 +1,65 @@
-# Deploying Bibliocapsa from pre-built images (GHCR)
+# Deploying Bibliocapsa (pre-built images)
 
-Build the images once on a dev machine, push to GitHub Container Registry, and
-have each host (NAS, server, …) just **pull** them. No source, no on-host build.
+The fastest way to run Bibliocapsa: pull the public images, set three values, and start —
+no source checkout, no on-host build. Ideal for a NAS (Synology/Portainer/Unraid) or any
+Docker host.
 
-GHCR packages are **private by default**, so this is private until you choose to
-make a package public (GitHub → your profile → Packages → the package →
-Package settings → Change visibility).
+> Prefer to build from source instead? See the **Quick start** in the [README](README.md)
+> (`git clone` → `docker compose up -d`).
 
 ---
 
-## One-time setup
+## 1. Get the compose file
+Grab **`docker-compose.prod.yml`** from this repo (copy its contents, or download the file).
+Every service — including the reverse proxy — runs from a published image; the only host
+path you provide is your Calibre library.
 
-### 1. Create a GitHub token
-GitHub → Settings → Developer settings → **Personal access tokens (classic)** →
-Generate new token. Scopes: **`write:packages`** and **`read:packages`**
-(`read:packages` alone is enough on hosts that only pull). Copy the token.
-
-### 2. Log in to GHCR (on the build machine AND each host)
+## 2. Create the data folders
+Bibliocapsa keeps its data in a folder you choose (so it's visible and backup-able). Create
+it and its subfolders first — most Docker hosts don't auto-create bind-mount paths:
 ```bash
-docker login ghcr.io
-#   Username: <your GitHub username>
-#   Password: <the token from step 1>
+sudo mkdir -p /your/data/path/db /your/data/path/covers /your/data/path/uploads /your/data/path/webdav /your/data/path/caddy
 ```
+(On Synology, for example, use `/volume1/docker/bibliocapsa` as the base.)
 
----
-
-## Build & push (on your Mac)
-```bash
-GHCR_USER=<your-github-username-lowercase> ./build.sh 1.0
-```
-- Builds `bibliocapsa-backend` and `bibliocapsa-web` for `linux/amd64` (the NAS).
-  To also build for ARM hosts: `PLATFORMS=linux/amd64,linux/arm64 GHCR_USER=… ./build.sh 1.0`.
-- The first build is slow (Calibre bundle + a cross-arch web build); later builds reuse cache.
-- Bump the version each release (`1.0`, `1.1`, …); `latest` is also updated.
-
----
-
-## Deploy on a host (e.g. the NAS)
-Copy just three files to the host (e.g. `/volume1/docker/bibliocapsa/`):
-`docker-compose.prod.yml`, `Caddyfile`, and a `.env`.
-
-`.env` needs at least:
+## 3. Set the environment variables
+Use a `.env` file next to the compose, or — in Portainer — the stack's **Environment
+variables**. Required:
 ```env
-GHCR_USER=<your-github-username-lowercase>
-VERSION=1.0                       # or omit for 'latest'
-CALIBRE_LIBRARY_PATH=/volume1/docker/calibre-library
-POSTGRES_PASSWORD=<a-strong-password>
-PROXY_PORT=8090                   # the one port you expose / point Cloudflare at
-# PORT=8010  WEB_PORT=3001        # only if those collide with other containers
-# COOKIE_SECURE defaults to 'auto' (Secure over HTTPS, fine over http://ip)
+CALIBRE_LIBRARY_PATH=/path/to/your/calibre/library   # the folder containing metadata.db
+DATA_PATH=/your/data/path                            # the folder from step 2
+POSTGRES_PASSWORD=a-long-random-password
 ```
-Then:
+Optional (sensible defaults shown): `PROXY_PORT=8090`, `PORT=8000`, `WEB_PORT=3001`,
+`COOKIE_SECURE=auto`, `VERSION=latest`.
+
+## 4. Deploy
+**Portainer:** Stacks → Add stack → paste `docker-compose.prod.yml` → add the env vars → **Deploy**.
+
+**CLI:**
 ```bash
-docker login ghcr.io                                   # one-time
 docker compose -f docker-compose.prod.yml pull
 docker compose -f docker-compose.prod.yml up -d
 ```
-Open `http://<host>:8090`, create the first (admin) account.
+
+Open **`http://<host>:8090`** and create the first (admin) account. Point your reverse proxy
+or Cloudflare Tunnel at that single port.
+
+## Updating
+```bash
+docker compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.prod.yml up -d
+```
+Schema migrations run automatically on startup — ~30 seconds, no rebuild.
 
 ---
 
-## Updating a host (this is the whole point)
-After you `./build.sh <new-version>` on the Mac, on the host:
+## (Maintainers / forks) Building & publishing your own images
+The official images live at `ghcr.io/jwapps-app/bibliocapsa-*`. To build and publish your
+own — e.g. for a fork — on a machine with Docker buildx:
 ```bash
-docker compose -f docker-compose.prod.yml pull
-docker compose -f docker-compose.prod.yml up -d
+docker login ghcr.io                       # username + a token with write:packages
+GHCR_USER=<your-org-or-user> ./build.sh     # version is read from web/package.json
 ```
-Schema migrations run automatically on startup. ~30 seconds, no rebuild, no tarball.
+Multi-arch: `PLATFORMS=linux/amd64,linux/arm64 GHCR_USER=… ./build.sh`.
+Then deploy with `GHCR_USER=<your-org-or-user>` set, so the compose pulls *your* images.

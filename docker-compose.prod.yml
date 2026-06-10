@@ -1,18 +1,18 @@
 # Bibliocapsa — deploy compose. Fully self-contained: every service is a
-# pre-built image from GHCR (incl. the proxy with its Caddyfile baked in), so the
-# only host path needed is your Calibre library. Deploy via Portainer (paste this
-# + set the env vars) or CLI:
-#   docker login ghcr.io                         # one-time
+# pre-built (public) image, so the only host path you provide is your Calibre
+# library. Deploy via Portainer (paste this + set the env vars) or CLI:
 #   docker compose -f docker-compose.prod.yml pull && up -d
 #
-# Required env: GHCR_USER, CALIBRE_LIBRARY_PATH, POSTGRES_PASSWORD, and DATA_PATH
-# (the host folder for app data, e.g. /volume1/docker/bibliocapsa — db/covers/
-# uploads/webdav/caddy land in subfolders there, visible & backup-able). The
-# backend fixes ownership of bind-mounted folders itself. VERSION → latest.
+# Required env:  CALIBRE_LIBRARY_PATH, POSTGRES_PASSWORD, DATA_PATH
+#   DATA_PATH = host folder for app data (e.g. /volume1/docker/bibliocapsa) —
+#               db/covers/uploads/webdav/caddy land in subfolders there (visible,
+#               backup-able). The backend fixes their ownership itself.
+# Optional env: VERSION (default "latest"), GHCR_USER (default "jwapps-app" —
+#               only set this if running your own fork's images).
 services:
 
   bibliocapsa:
-    image: ghcr.io/${GHCR_USER}/bibliocapsa-backend:${VERSION:-latest}
+    image: ghcr.io/${GHCR_USER:-jwapps-app}/bibliocapsa-backend:${VERSION:-latest}
     container_name: bibliocapsa
     restart: unless-stopped
     ports:
@@ -44,7 +44,7 @@ services:
       start_period: 15s
 
   web:
-    image: ghcr.io/${GHCR_USER}/bibliocapsa-web:${VERSION:-latest}
+    image: ghcr.io/${GHCR_USER:-jwapps-app}/bibliocapsa-web:${VERSION:-latest}
     container_name: bibliocapsa-web
     restart: unless-stopped
     ports:
@@ -57,7 +57,7 @@ services:
         condition: service_healthy
 
   proxy:
-    image: ghcr.io/${GHCR_USER}/bibliocapsa-proxy:${VERSION:-latest}
+    image: ghcr.io/${GHCR_USER:-jwapps-app}/bibliocapsa-proxy:${VERSION:-latest}
     container_name: bibliocapsa-proxy
     restart: unless-stopped
     ports:
