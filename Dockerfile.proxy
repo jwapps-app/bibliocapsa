@@ -1,0 +1,4 @@
+# Caddy reverse proxy with the Bibliocapsa routing config baked in, so the deploy
+# stack needs no host-mounted Caddyfile (clean Portainer / fresh-install path).
+FROM caddy:2-alpine
+COPY Caddyfile /etc/caddy/Caddyfile

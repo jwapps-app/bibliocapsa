@@ -1,0 +1,14 @@
+# Single entrypoint for Bibliocapsa. Routes the API / OPDS / WebDAV / KOSync
+# paths to the backend and everything else to the web UI — so the whole app is
+# reachable on ONE port (and one Cloudflare route). A real reverse proxy here
+# also forwards WebDAV methods (PROPFIND/MKCOL/PUT) correctly, which the Next.js
+# rewrite layer does not.
+:80 {
+	@backend path /api/* /opds /opds/* /dav /dav/* /users/* /syncs/* /healthcheck
+	handle @backend {
+		reverse_proxy bibliocapsa:8000
+	}
+	handle {
+		reverse_proxy web:3000
+	}
+}

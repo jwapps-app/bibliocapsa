@@ -1,0 +1,85 @@
+# Bibliocapsa — deploy compose. Fully self-contained: every service is a
+# pre-built image from GHCR (incl. the proxy with its Caddyfile baked in), so the
+# only host path needed is your Calibre library. Deploy via Portainer (paste this
+# + set the env vars) or CLI:
+#   docker login ghcr.io                         # one-time
+#   docker compose -f docker-compose.prod.yml pull && up -d
+#
+# Required env: GHCR_USER, CALIBRE_LIBRARY_PATH, POSTGRES_PASSWORD, and DATA_PATH
+# (the host folder for app data, e.g. /volume1/docker/bibliocapsa — db/covers/
+# uploads/webdav/caddy land in subfolders there, visible & backup-able). The
+# backend fixes ownership of bind-mounted folders itself. VERSION → latest.
+services:
+
+  bibliocapsa:
+    image: ghcr.io/${GHCR_USER}/bibliocapsa-backend:${VERSION:-latest}
+    container_name: bibliocapsa
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8000}:8000"
+    volumes:
+      - ${CALIBRE_LIBRARY_PATH}:/calibre
+      - ${DATA_PATH:-./data}/covers:/app/cover_cache
+      - ${DATA_PATH:-./data}/uploads:/app/uploads
+      - ${DATA_PATH:-./data}/webdav:/app/webdav
+    environment:
+      CALIBRE_DB_PATH: /calibre/metadata.db
+      CALIBRE_LIBRARY_PATH: /calibre
+      CALIBRE_FTS_DB_PATH: /calibre/full-text-search.db
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-}"
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: bibliocapsa
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-bibliocapsa}"
+      POSTGRES_DB: bibliocapsa
+      COOKIE_SECURE: "${COOKIE_SECURE:-auto}"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  web:
+    image: ghcr.io/${GHCR_USER}/bibliocapsa-web:${VERSION:-latest}
+    container_name: bibliocapsa-web
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-3001}:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: "http://bibliocapsa:8000"
+      NODE_ENV: production
+    depends_on:
+      bibliocapsa:
+        condition: service_healthy
+
+  proxy:
+    image: ghcr.io/${GHCR_USER}/bibliocapsa-proxy:${VERSION:-latest}
+    container_name: bibliocapsa-proxy
+    restart: unless-stopped
+    ports:
+      - "${PROXY_PORT:-8090}:80"
+    volumes:
+      - ${DATA_PATH:-./data}/caddy:/data
+    depends_on:
+      - bibliocapsa
+      - web
+
+  db:
+    image: postgres:16-alpine
+    container_name: bibliocapsa-db
+    restart: unless-stopped
+    volumes:
+      - ${DATA_PATH:-./data}/db:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: bibliocapsa
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-bibliocapsa}"
+      POSTGRES_DB: bibliocapsa
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bibliocapsa"]
+      interval: 10s
+      timeout: 5s
+      retries: 5

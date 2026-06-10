@@ -1,0 +1,15 @@
+# Backend build context is the repo root, but the Dockerfile only needs
+# requirements.txt + app/. Keep everything else out so buildx doesn't ship the
+# web tree, secrets, or git history into the build.
+web/
+.git/
+.env
+.venv/
+__pycache__/
+*.pyc
+*.md
+docker-compose*.yml
+build.sh
+openapi.json
+.DS_Store
+._*

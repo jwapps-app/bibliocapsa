@@ -1,0 +1,29 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# Next.js
+web/node_modules/
+web/.next/
+web/out/
+*.tsbuildinfo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local tooling / agent config
+.claude/
+
+# Internal dev docs & generated artifacts — keep local, don't publish
+HANDOFF.md
+HANDOFF2.md
+BIBLIOCAPSA_iOS_BLUEPRINT.md
+openapi.json
