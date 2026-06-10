@@ -42,10 +42,14 @@ cp .env.example .env
 docker compose up -d
 ```
 
-Open **http://localhost:3001** and create your admin account on first run.
+Open **http://localhost:8090** and create your admin account on first run.
+
+`:8090` is the single front door (a Caddy proxy that serves the web UI and routes the
+API, OPDS, and KOReader sync on one port — point your reverse proxy / Cloudflare here).
+The web UI and API are also exposed directly on `:3001` and `:8000` if you need them.
 
 > **Prefer pre-built images** (no local build)? See **[DEPLOY.md](DEPLOY.md)** for the
-> image-based compose — ideal for a NAS / Portainer, behind a single proxy port.
+> image-based compose — ideal for a NAS / Portainer.
 
 ## Configuration
 
