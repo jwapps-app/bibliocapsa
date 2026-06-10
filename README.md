@@ -2,6 +2,8 @@
 
 **Your whole library — digital *and* physical — in one private, self-hosted home, with the deepest KOReader integration anywhere.**
 
+🌐 **[bibliocapsa.app](https://bibliocapsa.app)** · self-hosted · GPLv3
+
 Bibliocapsa sits on top of your existing [Calibre](https://calibre-ebook.com/) library (read-only by default — it never touches your files unless you deliberately push a change back) and adds a modern multi-user web experience, physical-book tracking, and a complete, built-in KOReader stack. It runs in Docker on your own hardware, so your reading life stays private, ad-free, and entirely yours.
 
 > _Screenshots go here._
