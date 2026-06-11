@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
-import { ArrowLeft, ChevronLeft, ChevronRight, Loader2, Settings2, Minus, Plus, List, X, Search } from "lucide-react";
+import { ArrowLeft, ChevronLeft, ChevronRight, Loader2, Settings2, Minus, Plus, List, X, Search, Info } from "lucide-react";
 import { api } from "@/lib/api";
 
 type Theme = "light" | "sepia" | "dark";
@@ -549,7 +549,14 @@ function EpubReader({ bookId }: { bookId: number }) {
           </button>
         </div>
         <div className="flex items-center gap-4">
-          <span style={{ fontFamily: "var(--mono)", fontSize: "0.72rem", color: "var(--gold-light)" }}>{pct}%</span>
+          <span className="inline-flex items-center gap-1.5">
+            <span
+              title="Reading position syncs exactly between KOReader devices, and between browser sessions. When you switch between this in-browser reader and KOReader, it resumes at the nearest chapter — the two readers track position differently."
+              style={{ color: "var(--parchment-dim)", cursor: "help", display: "inline-flex", opacity: 0.6 }}>
+              <Info className="w-3.5 h-3.5" />
+            </span>
+            <span style={{ fontFamily: "var(--mono)", fontSize: "0.72rem", color: "var(--gold-light)" }}>{pct}%</span>
+          </span>
           <button onClick={() => setShowSettings(s => !s)} style={{ color: "var(--parchment-dim)" }} aria-label="Reader settings">
             <Settings2 className="w-4 h-4" />
           </button>

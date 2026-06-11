@@ -73,6 +73,11 @@ Point KOReader at your Bibliocapsa address with your account credentials:
 
 One account, one address — catalog, sync, and stats all just work.
 
+> **A note on position sync:** your place in a book syncs *exactly* between KOReader
+> devices, and between browser sessions. When you switch *between* the in-browser reader
+> and KOReader, it resumes at the **nearest chapter** — the two readers track position
+> differently, so this is the reliable common ground.
+
 ---
 
 ## License
