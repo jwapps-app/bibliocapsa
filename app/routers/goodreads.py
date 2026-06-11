@@ -373,7 +373,10 @@ async def preview_shelves(request: Request, file: UploadFile = File(...)):
     if not file.filename.endswith(".csv"):
         raise HTTPException(status_code=400, detail="Must be a .csv file")
     from collections import Counter
-    content = (await file.read()).decode("utf-8-sig")
+    raw = await file.read()
+    if len(raw) > 50 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="CSV is too large (max 50 MB)")
+    content = raw.decode("utf-8-sig")
     counts: Counter = Counter()
     for row in csv.DictReader(io.StringIO(content)):
         for s in (row.get("Bookshelves", "") or "").split(","):
@@ -400,6 +403,8 @@ async def import_goodreads(
     if not file.filename.endswith(".csv"):
         raise HTTPException(status_code=400, detail="Must be a .csv file")
     content = await file.read()
+    if len(content) > 50 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="CSV is too large (max 50 MB)")
     csv_content = content.decode("utf-8-sig")
     global _import_status
     if _import_status.get("status") == "running":

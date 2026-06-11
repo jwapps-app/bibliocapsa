@@ -53,12 +53,19 @@ def nav_counts(request: Request):
 
 
 @router.get("/health", response_model=HealthResponse, summary="Server health check")
-def health():
+def health(request: Request):
+    # Public/unauthenticated (the Docker healthcheck hits this). Verify the
+    # Calibre DB is reachable; return library counts ONLY to an authenticated
+    # caller, so an anonymous internet visitor can't learn how many books are in
+    # the library. Never surface raw error strings here.
+    from .. import auth
     try:
         with get_conn() as conn:
+            if auth.authenticate_request(request) is None:
+                conn.execute("SELECT 1").fetchone()
+                return HealthResponse(status="ok", calibre_db="connected", book_count=0)
             calibre_count = conn.execute("SELECT COUNT(*) FROM books").fetchone()[0]
 
-        # Add native physical-only books (not in Calibre)
         native_count = 0
         try:
             from ..pg_database import get_database_url
@@ -71,18 +78,12 @@ def health():
         except Exception:
             pass
 
-        total = calibre_count + native_count
-
         return HealthResponse(
             status="ok",
             calibre_db="connected",
-            book_count=total,
+            book_count=calibre_count + native_count,
             calibre_count=calibre_count,
             native_count=native_count,
         )
-    except Exception as e:
-        return HealthResponse(
-            status="error",
-            calibre_db=str(e),
-            book_count=0,
-        )
+    except Exception:
+        return HealthResponse(status="error", calibre_db="error", book_count=0)

@@ -93,10 +93,15 @@ def full_text_search(
         where = "searchable_text LIKE ? AND searchable_text IS NOT NULL"
         wparams: list = [like_query]
         if allowed_ids is not None:
-            # SQLite caps host params (~999); chunk if an allow-list is very broad.
-            id_qs = ",".join("?" * len(allowed_ids))
-            where += f" AND book IN ({id_qs})"
-            wparams += allowed_ids
+            # Stash the allow-list in a TEMP table (SQLite keeps temp objects in a
+            # separate temp DB, so this works even on a read-only connection) and
+            # join via a subquery — avoids the ~999 host-parameter cap that a
+            # literal `book IN (?, ?, …)` would blow past for a broad allow-list
+            # (which previously 500'd restricted members).
+            fts_conn.execute("CREATE TEMP TABLE _allowed (book INTEGER PRIMARY KEY)")
+            fts_conn.executemany("INSERT OR IGNORE INTO _allowed (book) VALUES (?)",
+                                 [(i,) for i in allowed_ids])
+            where += " AND book IN (SELECT book FROM _allowed)"
 
         rows = fts_conn.execute(
             f"SELECT book, format, searchable_text FROM books_text WHERE {where} LIMIT ? OFFSET ?",
@@ -109,8 +114,8 @@ def full_text_search(
         total = total_row[0] if total_row else 0
 
         fts_conn.close()
-    except sqlite3.Error as e:
-        raise HTTPException(status_code=500, detail=f"Full-text search error: {e}")
+    except sqlite3.Error:
+        raise HTTPException(status_code=500, detail="Full-text search error")
 
     if not rows:
         return SearchResponse(query=q, total=0, results=[])

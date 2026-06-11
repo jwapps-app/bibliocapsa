@@ -9,7 +9,9 @@ Account model:
 Every account works for both the web UI and KOReader sync (shared password).
 """
 
+import hmac
 import os
+import re
 import time
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
@@ -87,6 +89,7 @@ class RegisterBody(BaseModel):
     email: Optional[str] = None
     role: Optional[str] = None  # admin-only; ignored on bootstrap (always admin)
     genres: Optional[list[str]] = None  # allow-list of genres for a restricted member
+    setup_token: Optional[str] = None  # required on bootstrap iff SETUP_TOKEN env is set
 
 
 class AccessBody(BaseModel):
@@ -144,12 +147,22 @@ def register(body: RegisterBody, request: Request, response: Response):
     password = body.password
     if not username or not password:
         raise HTTPException(status_code=400, detail="Username and password are required")
-    if len(password) < 6:
-        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", username):
+        raise HTTPException(status_code=400, detail="Username may only contain letters, numbers, and . _ - (max 64)")
+    if len(password) < 12:
+        raise HTTPException(status_code=400, detail="Password must be at least 12 characters")
 
     existing = _account_count()
     bootstrap = existing == 0
     role = "admin"
+    if bootstrap:
+        # Bootstrap-race guard: if SETUP_TOKEN is set, the very first (admin)
+        # account can only be claimed by someone who presents it — so an
+        # internet-exposed fresh instance can't be hijacked by a stranger who
+        # reaches /register before the owner does.
+        required = os.getenv("SETUP_TOKEN")
+        if required and not hmac.compare_digest(body.setup_token or "", required):
+            raise HTTPException(status_code=403, detail="A valid setup token is required to create the first account")
     if not bootstrap:
         requester = auth.authenticate_request(request)
         if not requester or requester.get("role") != "admin":
@@ -269,8 +282,8 @@ def set_access(user_id: int, body: AccessBody, request: Request):
 @router.post("/users/{user_id}/password", summary="Reset a member's password (admin only)")
 def admin_reset_password(user_id: int, body: PasswordBody, request: Request):
     _require_admin(request)
-    if len(body.new_password) < 6:
-        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    if len(body.new_password) < 12:
+        raise HTTPException(status_code=400, detail="Password must be at least 12 characters")
     conn = _pg()
     try:
         cur = conn.cursor()
@@ -354,8 +367,8 @@ def change_password(body: PasswordBody, request: Request):
     user = auth.authenticate_request(request)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    if len(body.new_password) < 6:
-        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    if len(body.new_password) < 12:
+        raise HTTPException(status_code=400, detail="Password must be at least 12 characters")
 
     # Verify the current password unless the account never had one set.
     conn = _pg()
@@ -368,6 +381,13 @@ def change_password(body: PasswordBody, request: Request):
         cur.execute(
             "UPDATE users SET password_hash = %s, kosync_key = %s WHERE id = %s",
             (auth.hash_password(body.new_password), auth.kosync_key(body.new_password), user["id"]),
+        )
+        # Invalidate every OTHER session for this user — a leaked/old session
+        # token stops working once the password changes (the current one stays).
+        current_token = request.cookies.get(auth.SESSION_COOKIE)
+        cur.execute(
+            "DELETE FROM sessions WHERE user_id = %s AND token IS DISTINCT FROM %s",
+            (user["id"], current_token),
         )
         conn.commit()
     except HTTPException:

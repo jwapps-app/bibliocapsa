@@ -49,13 +49,17 @@ async def lifespan(app: FastAPI):
     logger.info("Bibliocapsa stopped.")
 
 
+# Interactive API docs (Swagger/ReDoc/OpenAPI) are useful in dev but needless
+# attack surface on a public instance — enable them only when DEBUG is on.
+_DOCS_ENABLED = os.getenv("DEBUG", "false").lower() in ("1", "true", "yes")
+
 app = FastAPI(
     title="Bibliocapsa",
     description="Your complete personal library — Calibre ebooks, physical books, lending, and more.",
     version="2.0.0",
-    docs_url="/api/docs",
-    redoc_url="/api/redoc",
-    openapi_url="/api/openapi.json",
+    docs_url="/api/docs" if _DOCS_ENABLED else None,
+    redoc_url="/api/redoc" if _DOCS_ENABLED else None,
+    openapi_url="/api/openapi.json" if _DOCS_ENABLED else None,
     lifespan=lifespan,
 )
 
@@ -100,8 +104,12 @@ async def _unhandled_exc_handler(request, exc):
     return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 
-_AUTH_EXEMPT_EXACT = {"/api/health", "/healthcheck"}
-_AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/users/", "/syncs/")
+# Exempt ONLY the exact KOSync/auth/health paths — not broad /users/ or /syncs/
+# wildcards (a future route living under those would otherwise be silently
+# unauthenticated). KOSync routes: /users/auth, /users/create, /syncs/progress
+# (PUT) and /syncs/progress/{document} (GET); they carry KOReader's own x-auth.
+_AUTH_EXEMPT_EXACT = {"/api/health", "/healthcheck", "/users/auth", "/users/create", "/syncs/progress"}
+_AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/syncs/progress/")
 
 
 def _auth_exempt(path: str, method: str) -> bool:

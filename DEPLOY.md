@@ -30,8 +30,13 @@ CALIBRE_LIBRARY_PATH=/path/to/your/calibre/library   # the folder containing met
 DATA_PATH=/your/data/path                            # the folder from step 2
 POSTGRES_PASSWORD=a-long-random-password
 ```
-Optional (sensible defaults shown): `PROXY_PORT=8090`, `PORT=8000`, `WEB_PORT=3001`,
-`COOKIE_SECURE=auto`, `VERSION=latest`.
+Optional (sensible defaults shown): `PROXY_PORT=8090`, `COOKIE_SECURE=auto`,
+`VERSION=latest`. Only the proxy port is published; the API and web containers stay
+on the internal Docker network.
+
+Hardening (optional): `SETUP_TOKEN` (require a secret to claim the first admin
+account — see step 4), `SECRET_KEY` (stable server secret for KOReader key wrapping;
+defaults to `POSTGRES_PASSWORD` if unset).
 
 ## 4. Deploy
 **Portainer:** Stacks → Add stack → paste `docker-compose.prod.yml` → add the env vars → **Deploy**.
@@ -44,6 +49,12 @@ docker compose -f docker-compose.prod.yml up -d
 
 Open **`http://<host>:8090`** and create the first (admin) account. Point your reverse proxy
 or Cloudflare Tunnel at that single port.
+
+> ⚠️ **Claim the admin account before exposing the instance.** The first account to
+> register becomes the admin with no password challenge. Register it on your LAN
+> *before* attaching the tunnel/port-forward — or set `SETUP_TOKEN=<a-secret>` in the
+> environment and pass that token when registering, so a stranger who reaches a fresh
+> instance first can't hijack it.
 
 ## Updating
 ```bash

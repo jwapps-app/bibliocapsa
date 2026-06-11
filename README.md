@@ -46,9 +46,16 @@ docker compose up -d
 
 Open **http://localhost:8090** and create your admin account on first run.
 
+> ⚠️ **Create your admin account before exposing the instance.** The first account to
+> register becomes the admin, with no password challenge. Register it locally (on your
+> LAN) *before* you attach a Cloudflare Tunnel or forward a port — or set `SETUP_TOKEN`
+> in `.env` so only you can claim that first account.
+
 `:8090` is the single front door (a Caddy proxy that serves the web UI and routes the
-API, OPDS, and KOReader sync on one port — point your reverse proxy / Cloudflare here).
-The web UI and API are also exposed directly on `:3001` and `:8000` if you need them.
+API, OPDS, and KOReader sync on one port — **point your reverse proxy / Cloudflare at
+only this port**). When you build from source, the web UI and API are also bound to
+`:3001`/`:8000` for local development — don't forward those to the internet. (The
+pre-built **[DEPLOY.md](DEPLOY.md)** images publish *only* the proxy port.)
 
 > **Prefer pre-built images** (no local build)? See **[DEPLOY.md](DEPLOY.md)** for the
 > image-based compose — ideal for a NAS / Portainer.

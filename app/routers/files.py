@@ -110,10 +110,7 @@ def serve_book_file(book_id: int, fmt: str, request: Request,
     file_path = os.path.join(CALIBRE_ROOT, book["path"], filename)
 
     if not os.path.isfile(file_path):
-        raise HTTPException(
-            status_code=404,
-            detail=f"File not found on disk: {filename}"
-        )
+        raise HTTPException(status_code=404, detail="File not available")
 
     media_type = MIME_TYPES.get(fmt_upper, "application/octet-stream")
 

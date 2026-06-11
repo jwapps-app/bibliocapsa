@@ -15,8 +15,11 @@ services:
     image: ghcr.io/${GHCR_USER:-jwapps-app}/bibliocapsa-backend:${VERSION:-latest}
     container_name: bibliocapsa
     restart: unless-stopped
-    ports:
-      - "${PORT:-8000}:8000"
+    # No published port: the backend is reached only by the proxy and web
+    # containers over the internal Docker network (as `bibliocapsa:8000`). This
+    # keeps the API off the host so it can't be hit directly (bypassing the proxy
+    # or spoofing X-Forwarded-Proto). Expose it only for debugging, and then bind
+    # to loopback: `127.0.0.1:8000:8000`.
     volumes:
       - ${CALIBRE_LIBRARY_PATH}:/calibre
       - ${DATA_PATH:-./data}/covers:/app/cover_cache
@@ -30,7 +33,7 @@ services:
       POSTGRES_HOST: db
       POSTGRES_PORT: 5432
       POSTGRES_USER: bibliocapsa
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-bibliocapsa}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set a strong POSTGRES_PASSWORD in .env}"
       POSTGRES_DB: bibliocapsa
       COOKIE_SECURE: "${COOKIE_SECURE:-auto}"
     depends_on:
@@ -47,8 +50,8 @@ services:
     image: ghcr.io/${GHCR_USER:-jwapps-app}/bibliocapsa-web:${VERSION:-latest}
     container_name: bibliocapsa-web
     restart: unless-stopped
-    ports:
-      - "${WEB_PORT:-3001}:3000"
+    # No published port: the web UI is served through the proxy on PROXY_PORT.
+    # The proxy reaches it as `web:3000` on the internal network.
     environment:
       NEXT_PUBLIC_API_URL: "http://bibliocapsa:8000"
       NODE_ENV: production
@@ -76,7 +79,7 @@ services:
       - ${DATA_PATH:-./data}/db:/var/lib/postgresql/data
     environment:
       POSTGRES_USER: bibliocapsa
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-bibliocapsa}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set a strong POSTGRES_PASSWORD in .env}"
       POSTGRES_DB: bibliocapsa
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U bibliocapsa"]

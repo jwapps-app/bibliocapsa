@@ -4,6 +4,15 @@
 # also forwards WebDAV methods (PROPFIND/MKCOL/PUT) correctly, which the Next.js
 # rewrite layer does not.
 :80 {
+	# Baseline security headers (TLS/HSTS is owned by the upstream — Cloudflare or
+	# your own reverse proxy — since this listens on plain :80 behind it).
+	header {
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
 	@backend path /api/* /opds /opds/* /dav /dav/* /users/* /syncs/* /healthcheck
 	handle @backend {
 		reverse_proxy bibliocapsa:8000

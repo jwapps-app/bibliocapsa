@@ -13,6 +13,7 @@ function LoginInner() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [setupToken, setSetupToken] = useState("");
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -33,7 +34,7 @@ function LoginInner() {
     setBusy(true); setError(null);
     try {
       if (setupRequired) {
-        await api.register({ username, password, name: name || undefined });
+        await api.register({ username, password, name: name || undefined, setup_token: setupToken || undefined });
       } else {
         await api.login(username, password);
       }
@@ -85,6 +86,13 @@ function LoginInner() {
               <Label>Confirm password</Label>
               <input className="bc-input" type="password" value={confirmPassword}
                      onChange={(e) => setConfirmPassword(e.target.value)} autoComplete="new-password" required />
+            </div>
+          )}
+          {setupRequired && (
+            <div>
+              <Label>Setup token (only if your server requires one)</Label>
+              <input className="bc-input" type="password" value={setupToken}
+                     onChange={(e) => setSetupToken(e.target.value)} autoComplete="off" />
             </div>
           )}
 

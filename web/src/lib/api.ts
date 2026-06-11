@@ -299,7 +299,7 @@ export const api = {
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail ?? "Login failed");
     return res.json();
   },
-  register: async (body: { username: string; password: string; name?: string; email?: string; role?: string; genres?: string[] }): Promise<CurrentUser> => {
+  register: async (body: { username: string; password: string; name?: string; email?: string; role?: string; genres?: string[]; setup_token?: string }): Promise<CurrentUser> => {
     const res = await fetch("/api/auth/register", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     });

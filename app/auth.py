@@ -16,6 +16,7 @@ All crypto here is Python stdlib — no extra dependencies.
 import base64
 import hashlib
 import hmac
+import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -61,9 +62,28 @@ def verify_password(plaintext: str, stored: Optional[str]) -> bool:
         return False
 
 
+def _kosync_secret() -> bytes:
+    """Server-side secret used to HMAC-wrap the KOReader md5 key. Kept OUT of the
+    database (env only) so a DB-only leak can't be rainbow-tabled or brute-forced
+    back to passwords. Prefer an explicit SECRET_KEY; fall back to
+    POSTGRES_PASSWORD (also env-only). Must stay stable, or KOReader logins need a
+    password reset to re-derive the stored key."""
+    secret = os.getenv("SECRET_KEY") or os.getenv("POSTGRES_PASSWORD") or "bibliocapsa-insecure-default"
+    return secret.encode()
+
+
+def kosync_wrap(md5_hex: str) -> str:
+    """HMAC-wrap the md5 KOReader sends (or that we derive from a plaintext
+    password) with the server secret, so the value stored in `users.kosync_key`
+    is never a bare, crackable md5(password)."""
+    return hmac.new(_kosync_secret(), md5_hex.encode(), hashlib.sha256).hexdigest()
+
+
 def kosync_key(plaintext: str) -> str:
-    """The MD5 KOReader computes client-side and sends as x-auth-key."""
-    return hashlib.md5(plaintext.encode()).hexdigest()
+    """Stored KOReader auth key. KOReader computes md5(password) client-side and
+    sends it as x-auth-key; we wrap that md5 with a server secret so the DB holds
+    hmac(secret, md5) — not the rainbow-table-able md5 itself."""
+    return kosync_wrap(hashlib.md5(plaintext.encode()).hexdigest())
 
 
 # ── Sessions ──────────────────────────────────────────────────────────────────

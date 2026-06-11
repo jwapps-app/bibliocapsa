@@ -51,10 +51,15 @@ def _check_auth(username: Optional[str], key: Optional[str]) -> bool:
             (username,),
         )
         row = cur.fetchone()
-        import hmac
-        return bool(row) and row["kosync_key"] is not None and hmac.compare_digest(str(row["kosync_key"]), str(key))
     finally:
         conn.close()
+    if not row or row["kosync_key"] is None:
+        return False
+    # KOReader sends md5(password); the DB stores hmac(secret, md5). Wrap the
+    # incoming key the same way before a constant-time compare.
+    import hmac
+    from ..auth import kosync_wrap
+    return hmac.compare_digest(str(row["kosync_key"]), kosync_wrap(str(key)))
 
 
 # ── Health ──────────────────────────────────────────────────────────────────

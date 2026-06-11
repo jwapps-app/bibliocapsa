@@ -343,6 +343,18 @@ def init_postgres():
                   )
             """)
 
+        # Security: wrap any legacy bare-md5 KOReader keys with the server HMAC so
+        # a DB leak can't be rainbow-tabled back to passwords. A bare md5 hex is
+        # 32 chars; a wrapped sha256 hex is 64 — so this is idempotent and only
+        # touches not-yet-migrated rows. KOReader keeps working without re-login.
+        cur.execute("SELECT id, kosync_key FROM users WHERE kosync_key IS NOT NULL AND length(kosync_key) = 32")
+        legacy_keys = cur.fetchall()
+        if legacy_keys:
+            from .auth import kosync_wrap
+            for uid, md5_hex in legacy_keys:
+                cur.execute("UPDATE users SET kosync_key = %s WHERE id = %s", (kosync_wrap(md5_hex), uid))
+            logger.info("Wrapped %d legacy KOReader key(s) with server HMAC", len(legacy_keys))
+
         conn.commit()
         cur.close()
         conn.close()

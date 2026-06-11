@@ -2,7 +2,7 @@ FROM python:3.12-slim
 
 LABEL org.opencontainers.image.title="Bibliocapsa"
 LABEL org.opencontainers.image.description="Read-only REST API for Calibre libraries"
-LABEL org.opencontainers.image.source="https://github.com/yourusername/bibliocapsa"
+LABEL org.opencontainers.image.source="https://github.com/jwapps-app/bibliocapsa"
 
 # No root after setup
 RUN useradd -m -u 1001 bridge
@@ -52,5 +52,9 @@ ENV CALIBRE_LIBRARY_PATH=/calibre
 
 EXPOSE 8000
 
+# Single worker on purpose: the login rate-limiter and background job-status are
+# in-process, so multiple workers would each keep their own (weakening the
+# brute-force limit and confusing status reads). One worker is plenty for a
+# household-scale instance; scale with replicas + a shared store if ever needed.
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

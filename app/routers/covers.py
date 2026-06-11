@@ -36,10 +36,7 @@ def get_cover(book_id: int, request: Request):
     cover_path = os.path.join(CALIBRE_ROOT, row["path"], "cover.jpg")
 
     if not os.path.isfile(cover_path):
-        raise HTTPException(
-            status_code=404,
-            detail=f"Cover file not found on disk: {cover_path}"
-        )
+        raise HTTPException(status_code=404, detail="No cover available")
 
     return FileResponse(
         cover_path,
