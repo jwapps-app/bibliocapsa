@@ -1,6 +1,6 @@
 import { api } from "@/lib/api";
 import { notFound } from "next/navigation";
-import { Download, Calendar, Building2, Hash, BookOpen, BookOpenText } from "lucide-react";
+import { Download, Calendar, Building2, Hash, BookOpen, BookOpenText, Info } from "lucide-react";
 import { AddToShelf } from "@/components/AddToShelf";
 import { BackLink } from "@/components/BackLink";
 import { NativeBookDetail } from "./native";
@@ -130,17 +130,25 @@ export default async function BookPage({
               const sendable = book.formats.some(f => ["EPUB", "AZW3", "MOBI", "PDF"].includes(f.format.toUpperCase()));
               const readHref = hasEpub ? `/books/${book.id}/read` : `/books/${book.id}/read?fmt=pdf`;
               return (
-                <div className="flex flex-wrap items-center gap-2 mb-4">
-                  {(hasEpub || hasPdf) && (
-                    <a href={readHref}
-                       className="inline-flex items-center gap-2 px-4 py-2 rounded-sm border transition-colors hover:border-[var(--gold)]"
-                       style={{ fontFamily: "var(--mono)", fontSize: "0.78rem", color: "var(--gold-light)",
-                                borderColor: "var(--gold-dim)", background: "rgba(107,78,30,0.2)" }}>
-                      <BookOpenText className="w-4 h-4" /> Read{hasEpub ? "" : " (PDF)"}
-                    </a>
+                <>
+                  <div className="flex flex-wrap items-center gap-2 mb-2">
+                    {(hasEpub || hasPdf) && (
+                      <a href={readHref}
+                         className="inline-flex items-center gap-2 px-4 py-2 rounded-sm border transition-colors hover:border-[var(--gold)]"
+                         style={{ fontFamily: "var(--mono)", fontSize: "0.78rem", color: "var(--gold-light)",
+                                  borderColor: "var(--gold-dim)", background: "rgba(107,78,30,0.2)" }}>
+                        <BookOpenText className="w-4 h-4" /> Read{hasEpub ? "" : " (PDF)"}
+                      </a>
+                    )}
+                    {sendable && <SendToKindle bookId={book.id} />}
+                  </div>
+                  {hasEpub && (
+                    <p className="flex items-start gap-1.5 mb-4" style={{ fontFamily: "var(--body)", fontSize: "0.72rem", color: "var(--parchment-dim)", opacity: 0.6 }}>
+                      <Info className="w-3 h-3 mt-0.5 shrink-0" />
+                      <span>Reading here syncs your place with KOReader to the <strong style={{ color: "var(--parchment)" }}>nearest chapter</strong> — exact position is kept between KOReader devices.</span>
+                    </p>
                   )}
-                  {sendable && <SendToKindle bookId={book.id} />}
-                </div>
+                </>
               );
             })()}
 
