@@ -61,6 +61,7 @@ class BookDetail(BookSummary):
     formats: list[FormatRef] = []
     path: Optional[str] = None
     series_index: Optional[float] = None
+    date_added: Optional[datetime] = None  # Calibre `timestamp` (when added)
     custom: list = []  # Calibre custom-column values (dynamic per library)
 
 

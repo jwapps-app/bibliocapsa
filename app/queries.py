@@ -196,6 +196,7 @@ def row_to_detail(conn: sqlite3.Connection, row: sqlite3.Row, base_url: str) -> 
         formats=fetch_formats_for_book(conn, book_id),
         path=row["path"],
         series_index=row["series_index"],
+        date_added=(_parse_dt(row["timestamp"]) if "timestamp" in row.keys() else None),
         book_source="calibre",
         has_physical=ownership["has_physical"],
         has_digital=ownership["has_digital"],

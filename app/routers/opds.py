@@ -114,6 +114,13 @@ def opds_root(request: Request):
     <content type="text">Browse and download your entire library</content>
   </entry>
   <entry>
+    <id>urn:bibliocapsa:wishlist</id>
+    <title>Want to Read</title>
+    <updated>{now}</updated>
+    <link rel="subsection" href="{base}/opds/wishlist" type="{OPDS_ACQUISITION}"/>
+    <content type="text">Books on your want-to-read list</content>
+  </entry>
+  <entry>
     <id>urn:bibliocapsa:series</id>
     <title>By Series</title>
     <updated>{now}</updated>
@@ -331,6 +338,46 @@ def opds_shelves(request: Request):
 """ for r in rows)
     return _nav_feed("urn:bibliocapsa:shelves:nav", "Shelves",
                      f"{base}/opds/shelves", entries, base, now)
+
+
+@router.get("/wishlist", summary="OPDS want-to-read acquisition feed")
+def opds_wishlist(request: Request):
+    base = ""  # root-relative hrefs so clients resolve against the URL they reached us on
+    now = datetime.now(tz=timezone.utc).isoformat()
+    allowed = access.restriction_for_request(request)
+    user = getattr(request.state, "user", None)
+
+    cal_ids = []
+    if user:
+        from .wishlist import _pg
+        conn = _pg()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT book_id FROM wishlist "
+                "WHERE user_id=%s AND book_source='calibre' AND book_id IS NOT NULL "
+                "ORDER BY added_at DESC",
+                (user["id"],),
+            )
+            cal_ids = [r["book_id"] for r in cur.fetchall()]
+        finally:
+            conn.close()
+
+    # Only owned Calibre books are downloadable; render those (access-filtered).
+    seen, entries = set(), ""
+    with get_conn() as cal:
+        for bid in cal_ids:
+            if bid in seen or not access.is_calibre_book_allowed(cal, bid, allowed):
+                continue
+            seen.add(bid)
+            row = cal.execute(
+                "SELECT id, title, last_modified, has_cover, uuid FROM books WHERE id = ?", (bid,)
+            ).fetchone()
+            if row:
+                entries += _book_entry(cal, base, row, now)
+
+    return _acquisition_feed("urn:bibliocapsa:wishlist:books", "Want to Read",
+                             f"{base}/opds/wishlist", entries, base, now)
 
 
 @router.get("/shelves/{shelf_id}", summary="OPDS downloadable books on a shelf")

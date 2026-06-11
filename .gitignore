@@ -27,3 +27,6 @@ HANDOFF.md
 HANDOFF2.md
 BIBLIOCAPSA_iOS_BLUEPRINT.md
 openapi.json
+
+# Local-only Mac Portainer stack (hardcodes machine paths)
+docker-compose.mac.yml

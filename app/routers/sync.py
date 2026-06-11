@@ -43,7 +43,7 @@ def sync(
     with get_conn() as conn:
         rows = conn.execute(
             f"""
-            SELECT b.id, b.title, b.sort, b.pubdate, b.last_modified,
+            SELECT b.id, b.title, b.sort, b.pubdate, b.last_modified, b.timestamp,
                    b.has_cover, b.uuid, b.path, b.series_index, b.author_sort
             FROM books b {where}
             ORDER BY b.last_modified ASC
