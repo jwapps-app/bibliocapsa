@@ -147,7 +147,7 @@ def register(body: RegisterBody, request: Request, response: Response):
     password = body.password
     if not username or not password:
         raise HTTPException(status_code=400, detail="Username and password are required")
-    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", username):
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", username) or username in (".", "..") or ".." in username:
         raise HTTPException(status_code=400, detail="Username may only contain letters, numbers, and . _ - (max 64)")
     if len(password) < 12:
         raise HTTPException(status_code=400, detail="Password must be at least 12 characters")

@@ -355,6 +355,15 @@ def init_postgres():
                 cur.execute("UPDATE users SET kosync_key = %s WHERE id = %s", (kosync_wrap(md5_hex), uid))
             logger.info("Wrapped %d legacy KOReader key(s) with server HMAC", len(legacy_keys))
 
+        # Hardening: bound every query so a runaway/expensive request can't pin the
+        # DB indefinitely. Applies to new sessions (the app's), not this init one.
+        try:
+            import os as _os
+            dbname = _os.getenv("POSTGRES_DB", "bibliocapsa").replace('"', '')
+            cur.execute(f"ALTER DATABASE \"{dbname}\" SET statement_timeout = '30s'")
+        except Exception as _e:
+            logger.warning("Could not set statement_timeout: %s", _e)
+
         conn.commit()
         cur.close()
         conn.close()

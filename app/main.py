@@ -31,6 +31,10 @@ def _warn_insecure_config():
     if os.getenv("COOKIE_SECURE", "auto").strip().lower() in ("0", "false", "no"):
         logger.warning("⚠ COOKIE_SECURE is forced off — session cookies won't be marked Secure even "
                        "over HTTPS. The default 'auto' handles this correctly; only force it if you must.")
+    if not os.getenv("SECRET_KEY"):
+        logger.warning("⚠ SECRET_KEY is unset — KOReader sync keys are wrapped with a secret derived "
+                       "from POSTGRES_PASSWORD. Set a dedicated SECRET_KEY so rotating the DB password "
+                       "doesn't invalidate KOReader logins, and to avoid the insecure built-in default.")
 
 
 @asynccontextmanager

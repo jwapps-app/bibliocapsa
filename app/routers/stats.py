@@ -158,39 +158,75 @@ def year_review(request: Request, year: int = 0):
 
     authors: Counter = Counter()
     genres: Counter = Counter()
+    author_ids: dict = {}   # name -> calibre author id (for linking)
+    genre_ids: dict = {}    # name -> calibre tag id
+    date_by = {(r["book_source"], r["book_id"]): r["date_read"] for r in rows}
+    books: list = []        # the actual read books, for display + links
+
     if cal_ids:
         try:
             with get_conn() as cal:
                 ph = ",".join("?" * len(cal_ids))
-                for row in cal.execute(
-                    f"SELECT a.name FROM books_authors_link bal JOIN authors a ON a.id=bal.author "
-                    f"WHERE bal.book IN ({ph})", cal_ids).fetchall():
-                    authors[row[0]] += 1
-                for row in cal.execute(
-                    f"SELECT t.name FROM books_tags_link btl JOIN tags t ON t.id=btl.tag "
-                    f"WHERE btl.book IN ({ph})", cal_ids).fetchall():
-                    if row[0] and row[0].strip().lower() not in _NON_GENRE:
-                        genres[row[0]] += 1
+                brows = {r["id"]: r for r in cal.execute(
+                    f"SELECT id, title, has_cover FROM books WHERE id IN ({ph})", cal_ids).fetchall()}
+                auth_by_book: dict = {}
+                for r in cal.execute(
+                    f"SELECT bal.book AS book, a.id AS aid, a.name AS name FROM books_authors_link bal "
+                    f"JOIN authors a ON a.id=bal.author WHERE bal.book IN ({ph}) ORDER BY bal.id", cal_ids).fetchall():
+                    auth_by_book.setdefault(r["book"], []).append((r["aid"], r["name"]))
+                tag_by_book: dict = {}
+                for r in cal.execute(
+                    f"SELECT btl.book AS book, t.id AS tid, t.name AS name FROM books_tags_link btl "
+                    f"JOIN tags t ON t.id=btl.tag WHERE btl.book IN ({ph})", cal_ids).fetchall():
+                    tag_by_book.setdefault(r["book"], []).append((r["tid"], r["name"]))
+            for bid in cal_ids:
+                b = brows.get(bid)
+                if not b:
+                    continue
+                auths = auth_by_book.get(bid, [])
+                for aid, aname in auths:
+                    authors[aname] += 1
+                    author_ids[aname] = aid
+                for tid, tname in tag_by_book.get(bid, []):
+                    if tname and tname.strip().lower() not in _NON_GENRE:
+                        genres[tname] += 1
+                        genre_ids[tname] = tid
+                books.append({
+                    "book_id": bid, "book_source": "calibre", "title": b["title"],
+                    "author": auths[0][1] if auths else None,
+                    "author_id": auths[0][0] if auths else None,
+                    "author_ids": [aid for aid, _ in auths],
+                    "has_cover": bool(b["has_cover"]),
+                    "date_read": date_by.get(("calibre", bid)),
+                })
         except Exception:
             pass
     if nat_ids:
         conn2 = _pg()
         try:
             cur2 = conn2.cursor()
-            cur2.execute("SELECT author FROM native_books WHERE id = ANY(%s)", (nat_ids,))
+            cur2.execute("SELECT id, title, author FROM native_books WHERE id = ANY(%s)", (nat_ids,))
             for r in cur2.fetchall():
                 if r["author"]:
                     authors[r["author"]] += 1
+                books.append({
+                    "book_id": r["id"], "book_source": "native", "title": r["title"],
+                    "author": r["author"], "author_id": None, "author_ids": [],
+                    "has_cover": True,
+                    "date_read": date_by.get(("native", r["id"])),
+                })
         finally:
             conn2.close()
 
+    books.sort(key=lambda x: x["date_read"] or "", reverse=True)
     return {
         "year": year,
         "total_books": len(rows),
         "by_month": by_month,
         "by_format": by_format,
-        "top_authors": [{"name": n, "count": c} for n, c in authors.most_common(5)],
-        "top_genres": [{"name": n, "count": c} for n, c in genres.most_common(6)],
+        "top_authors": [{"name": n, "count": c, "id": author_ids.get(n)} for n, c in authors.most_common(5)],
+        "top_genres": [{"name": n, "count": c, "id": genre_ids.get(n)} for n, c in genres.most_common(6)],
+        "books": books,
     }
 
 

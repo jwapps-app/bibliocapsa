@@ -10,6 +10,12 @@
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "DENY"
 		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()"
+		# CSP tuned for this app: Next.js + the in-browser epub.js / pdf.js readers
+		# (which need eval, web workers, and blob: URLs) and the pervasive inline
+		# styles. Book HTML is separately DOMPurify-sanitized. frame-ancestors 'none'
+		# is the modern clickjacking guard.
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; frame-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
 		-Server
 	}
 

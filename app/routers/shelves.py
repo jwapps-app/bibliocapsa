@@ -416,27 +416,47 @@ def _resolve_smart_shelf(rules: dict, base_url: str, username: str = None, allow
     return books
 
 
+# ── Ownership helpers ────────────────────────────────────────────────────────
+# A shelf belongs to a user when owner_id == their id. Legacy/seeded shelves have
+# owner_id IS NULL (or is_shared) and are visible to everyone but only an admin
+# may mutate them. This prevents one member from reading/deleting another's shelf.
+
+def _user(request: Request):
+    return getattr(request.state, "user", None)
+
+
+def _can_edit_shelf(cur, shelf_id: int, user) -> bool:
+    cur.execute("SELECT owner_id FROM shelves WHERE id = %s", (shelf_id,))
+    row = cur.fetchone()
+    if not row or not user:
+        return False
+    return row["owner_id"] == user["id"] or user.get("role") == "admin"
+
+
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
-@router.get("", response_model=list[Shelf], summary="List all shelves")
+@router.get("", response_model=list[Shelf], summary="List the caller's shelves + shared shelves")
 def list_shelves(request: Request):
     from .. import access
     _ensure_tables()
     try:
+        user = _user(request)
+        uid = user["id"] if user else -1
         conn = _pg()
         cur = conn.cursor()
+        # Own shelves + shared/legacy (owner_id NULL or is_shared) only.
         cur.execute("""
             SELECT s.*,
                    CASE WHEN s.is_smart THEN 0
                         ELSE (SELECT COUNT(*) FROM shelf_books sb WHERE sb.shelf_id = s.id)
                    END as book_count
             FROM shelves s
+            WHERE s.owner_id = %s OR s.owner_id IS NULL OR s.is_shared
             ORDER BY s.is_smart DESC, s.name ASC
-        """)
+        """, (uid,))
         rows = cur.fetchall()
         conn.close()
 
-        user = getattr(request.state, "user", None)
         username = user.get("username") if user else None
         allowed = access.restriction_for_request(request)
 
@@ -458,7 +478,7 @@ def list_shelves(request: Request):
             ))
         return result
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Database unavailable: {e}")
+        raise HTTPException(status_code=503, detail="Database unavailable")
 
 
 class PreviewBody(BaseModel):
@@ -483,9 +503,15 @@ def preview_shelf(body: PreviewBody, request: Request):
     return {"count": n}
 
 
-@router.post("", response_model=Shelf, status_code=201, summary="Create a shelf")
-def create_shelf(shelf: ShelfCreate):
+@router.post("", response_model=Shelf, status_code=201, summary="Create a shelf (owned by the caller)")
+def create_shelf(shelf: ShelfCreate, request: Request):
     _ensure_tables()
+    user = _user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    # owner_id is the session user; only an admin may publish a shared shelf.
+    owner_id = user["id"]
+    is_shared = bool(shelf.is_shared) and user.get("role") == "admin"
     try:
         import json
         conn = _pg()
@@ -495,7 +521,7 @@ def create_shelf(shelf: ShelfCreate):
                VALUES (%s,%s,%s,%s::jsonb,%s,%s) RETURNING *""",
             (shelf.name, shelf.description, shelf.is_smart,
              json.dumps(shelf.smart_rules) if shelf.smart_rules else None,
-             shelf.owner_id, shelf.is_shared)
+             owner_id, is_shared)
         )
         row = cur.fetchone()
         conn.commit()
@@ -504,20 +530,27 @@ def create_shelf(shelf: ShelfCreate):
                      is_smart=row["is_smart"], smart_rules=row["smart_rules"],
                      owner_id=row["owner_id"], is_shared=row["is_shared"],
                      book_count=0, created_at=row["created_at"])
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Database error: {e}")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=503, detail="Database error")
 
 
-@router.delete("/{shelf_id}", status_code=204, summary="Delete a shelf")
-def delete_shelf(shelf_id: int):
+@router.delete("/{shelf_id}", status_code=204, summary="Delete a shelf (owner or admin)")
+def delete_shelf(shelf_id: int, request: Request):
     try:
         conn = _pg()
         cur = conn.cursor()
+        if not _can_edit_shelf(cur, shelf_id, _user(request)):
+            conn.close()
+            raise HTTPException(status_code=403, detail="Not your shelf")
         cur.execute("DELETE FROM shelves WHERE id = %s", (shelf_id,))
         conn.commit()
         conn.close()
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Database error: {e}")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=503, detail="Database error")
 
 
 @router.get("/{shelf_id}/books", response_model=list[ShelfBook], summary="Get books on a shelf")
@@ -534,6 +567,11 @@ def get_shelf_books(shelf_id: int, request: Request):
         conn.close()
         if not shelf:
             raise HTTPException(status_code=404, detail=f"Shelf {shelf_id} not found")
+        # Visibility: own shelf, or a shared / legacy (owner_id NULL) one.
+        _vu = _user(request)
+        if not (shelf["owner_id"] is None or shelf["is_shared"]
+                or (_vu and shelf["owner_id"] == _vu["id"])):
+            raise HTTPException(status_code=403, detail="Not your shelf")
 
         if shelf["is_smart"] and shelf["smart_rules"]:
             _u = getattr(request.state, "user", None)
@@ -630,12 +668,15 @@ def get_shelf_books(shelf_id: int, request: Request):
         raise HTTPException(status_code=503, detail=f"Error: {e}")
 
 
-@router.post("/{shelf_id}/books", status_code=201, summary="Add a book to a shelf")
-def add_book_to_shelf(shelf_id: int, book: ShelfBookAdd):
+@router.post("/{shelf_id}/books", status_code=201, summary="Add a book to a shelf (owner or admin)")
+def add_book_to_shelf(shelf_id: int, book: ShelfBookAdd, request: Request):
     _ensure_tables()
     try:
         conn = _pg()
         cur = conn.cursor()
+        if not _can_edit_shelf(cur, shelf_id, _user(request)):
+            conn.close()
+            raise HTTPException(status_code=403, detail="Not your shelf")
         cur.execute(
             """INSERT INTO shelf_books (shelf_id, book_id, book_source)
                VALUES (%s,%s,%s) ON CONFLICT DO NOTHING""",
@@ -644,20 +685,27 @@ def add_book_to_shelf(shelf_id: int, book: ShelfBookAdd):
         conn.commit()
         conn.close()
         return {"status": "added"}
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Database error: {e}")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=503, detail="Database error")
 
 
-@router.delete("/{shelf_id}/books/{book_id}", status_code=204, summary="Remove a book from a shelf")
-def remove_book_from_shelf(shelf_id: int, book_id: int, book_source: str = "calibre"):
+@router.delete("/{shelf_id}/books/{book_id}", status_code=204, summary="Remove a book from a shelf (owner or admin)")
+def remove_book_from_shelf(shelf_id: int, book_id: int, request: Request, book_source: str = "calibre"):
     try:
         conn = _pg()
         cur = conn.cursor()
+        if not _can_edit_shelf(cur, shelf_id, _user(request)):
+            conn.close()
+            raise HTTPException(status_code=403, detail="Not your shelf")
         cur.execute(
             "DELETE FROM shelf_books WHERE shelf_id=%s AND book_id=%s AND book_source=%s",
             (shelf_id, book_id, book_source)
         )
         conn.commit()
         conn.close()
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Database error: {e}")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=503, detail="Database error")

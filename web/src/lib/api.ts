@@ -176,7 +176,7 @@ export const api = {
   statsSummary: (days = 0) => get<any>(`/api/stats/summary${days ? `?days=${days}` : ""}`),
   bookStats: (id: number) => get<any>(`/api/stats/book/${id}`),
   getGoal: (year?: number) => get<{ year: number; target: number | null; count: number }>(`/api/stats/goal${year ? `?year=${year}` : ""}`),
-  yearReview: (year?: number) => get<{ year: number; total_books: number; by_month: number[]; by_format: { digital: number; physical: number }; top_authors: { name: string; count: number }[]; top_genres: { name: string; count: number }[] }>(`/api/stats/year${year ? `?year=${year}` : ""}`),
+  yearReview: (year?: number) => get<{ year: number; total_books: number; by_month: number[]; by_format: { digital: number; physical: number }; top_authors: { name: string; count: number; id: number | null }[]; top_genres: { name: string; count: number; id: number | null }[]; books: { book_id: number; book_source: string; title: string; author: string | null; author_id: number | null; author_ids: number[]; has_cover: boolean; date_read: string | null }[] }>(`/api/stats/year${year ? `?year=${year}` : ""}`),
   wishlist: () => get<{ id: number; title: string; author: string | null; isbn: string | null; cover_url: string | null; notes: string | null; book_id: number | null; book_source: string | null }[]>("/api/wishlist"),
   addWishlist: async (item: { title: string; author?: string; isbn?: string; cover_url?: string; notes?: string; book_id?: number; book_source?: string }): Promise<{ id: number }> => {
     const res = await fetch("/api/wishlist", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(item) });

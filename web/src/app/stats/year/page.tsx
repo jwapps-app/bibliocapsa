@@ -2,22 +2,34 @@
 
 import { useState, useEffect } from "react";
 import { api } from "@/lib/api";
-import { ArrowLeft, Loader2, BookOpen, BookMarked, Sparkles, ChevronLeft, ChevronRight } from "lucide-react";
+import { ArrowLeft, Loader2, BookOpen, BookMarked, Sparkles, ChevronLeft, ChevronRight, ChevronDown } from "lucide-react";
 
 const MONTHS = ["J", "F", "M", "A", "M", "J", "J", "A", "S", "O", "N", "D"];
 
+type Book = {
+  book_id: number; book_source: string; title: string;
+  author: string | null; author_id: number | null; author_ids: number[];
+  has_cover: boolean; date_read: string | null;
+};
 type Review = {
   year: number; total_books: number; by_month: number[];
   by_format: { digital: number; physical: number };
-  top_authors: { name: string; count: number }[];
-  top_genres: { name: string; count: number }[];
+  top_authors: { name: string; count: number; id: number | null }[];
+  top_genres: { name: string; count: number; id: number | null }[];
+  books: Book[];
 };
+
+const coverFor = (b: Book) =>
+  b.book_source === "native" ? `/api/native/books/${b.book_id}/cover` : `/api/covers/${b.book_id}`;
+const hrefFor = (b: Book) =>
+  b.book_source === "native" ? `/books/${b.book_id}?source=native` : `/books/${b.book_id}`;
 
 export default function YearReviewPage() {
   const thisYear = new Date().getFullYear();
   const [year, setYear] = useState(thisYear);
   const [data, setData] = useState<Review | null>(null);
   const [loading, setLoading] = useState(true);
+  const [openAuthor, setOpenAuthor] = useState<string | null>(null);
 
   useEffect(() => {
     setLoading(true);
@@ -87,18 +99,32 @@ export default function YearReviewPage() {
               </div>
             </div>
 
-            {/* Top authors */}
+            {/* Top authors — click to expand just the books read THIS year by that author */}
             {data.top_authors.length > 0 && (
               <div>
                 <SectionLabel>Most-read authors</SectionLabel>
                 <div className="space-y-2">
-                  {data.top_authors.map((a, i) => (
-                    <div key={a.name} className="flex items-center gap-3">
-                      <span style={{ fontFamily: "var(--serif)", fontSize: "1rem", color: "var(--gold-light)", width: "1.2rem" }}>{i + 1}</span>
-                      <span className="flex-1 truncate" style={{ fontFamily: "var(--body)", fontSize: "0.95rem", color: "var(--parchment)" }}>{a.name}</span>
-                      <span style={{ fontFamily: "var(--mono)", fontSize: "0.72rem", color: "var(--parchment-dim)" }}>{a.count} {a.count === 1 ? "book" : "books"}</span>
-                    </div>
-                  ))}
+                  {data.top_authors.map((a, i) => {
+                    const open = openAuthor === a.name;
+                    const theirBooks = data.books.filter(b =>
+                      a.id != null ? b.author_ids.includes(a.id) : b.author === a.name);
+                    return (
+                      <div key={a.name}>
+                        <button onClick={() => setOpenAuthor(open ? null : a.name)}
+                          className="flex items-center gap-3 w-full text-left hover:opacity-80">
+                          <span style={{ fontFamily: "var(--serif)", fontSize: "1rem", color: "var(--gold-light)", width: "1.2rem" }}>{i + 1}</span>
+                          <span className="flex-1 truncate" style={{ fontFamily: "var(--body)", fontSize: "0.95rem", color: "var(--parchment)" }}>{a.name}</span>
+                          <span style={{ fontFamily: "var(--mono)", fontSize: "0.72rem", color: "var(--parchment-dim)" }}>{a.count} {a.count === 1 ? "book" : "books"}</span>
+                          <ChevronDown className="w-3.5 h-3.5" style={{ color: "var(--parchment-dim)", transform: open ? "rotate(180deg)" : "none" }} />
+                        </button>
+                        {open && (
+                          <div className="space-y-2 mt-2 ml-7">
+                            {theirBooks.map(b => <BookRow key={`${b.book_source}-${b.book_id}`} b={b} />)}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -109,10 +135,22 @@ export default function YearReviewPage() {
                 <SectionLabel>Top genres</SectionLabel>
                 <div className="flex flex-wrap gap-2">
                   {data.top_genres.map(g => (
-                    <span key={g.name} className="px-3 py-1 rounded-full" style={{ background: "var(--ink-soft)", border: "1px solid var(--ink-muted)", fontFamily: "var(--mono)", fontSize: "0.72rem", color: "var(--parchment)" }}>
+                    <a key={g.name} href={g.id ? `/?tag_id=${g.id}` : undefined}
+                       className={`px-3 py-1 rounded-full ${g.id ? "hover:border-[var(--gold-dim)]" : "cursor-default"}`}
+                       style={{ background: "var(--ink-soft)", border: "1px solid var(--ink-muted)", fontFamily: "var(--mono)", fontSize: "0.72rem", color: "var(--parchment)" }}>
                       {g.name} <span style={{ color: "var(--gold-light)" }}>{g.count}</span>
-                    </span>
+                    </a>
                   ))}
+                </div>
+              </div>
+            )}
+
+            {/* Books finished — each links to its page; author links to the library */}
+            {data.books.length > 0 && (
+              <div>
+                <SectionLabel>Books finished ({data.books.length})</SectionLabel>
+                <div className="space-y-2">
+                  {data.books.map(b => <BookRow key={`${b.book_source}-${b.book_id}`} b={b} />)}
                 </div>
               </div>
             )}
@@ -127,6 +165,30 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
     <div className="uppercase tracking-widest mb-3" style={{ fontFamily: "var(--mono)", fontSize: "0.6rem", color: "var(--parchment-dim)", opacity: 0.5 }}>
       {children}
+    </div>
+  );
+}
+
+function BookRow({ b }: { b: Book }) {
+  return (
+    <div className="flex items-center gap-3 p-2.5 rounded-sm border" style={{ background: "var(--ink-soft)", borderColor: "var(--ink-muted)" }}>
+      <a href={hrefFor(b)} className="shrink-0">
+        {b.has_cover
+          ? <img src={coverFor(b)} alt="" className="w-8 h-12 object-cover rounded-sm" />
+          : <div className="w-8 h-12 rounded-sm" style={{ background: "var(--ink-muted)" }} />}
+      </a>
+      <div className="min-w-0 flex-1">
+        <a href={hrefFor(b)} className="block truncate hover:text-[var(--gold-light)]"
+           style={{ fontFamily: "var(--serif)", fontSize: "0.95rem", color: "var(--parchment)" }}>{b.title}</a>
+        {b.author && (
+          <a href={b.author_id ? `/?author_id=${b.author_id}` : undefined}
+             className={`block truncate ${b.author_id ? "hover:text-[var(--gold-light)]" : "cursor-default"}`}
+             style={{ fontFamily: "var(--body)", fontSize: "0.78rem", color: "var(--parchment-dim)", opacity: 0.8 }}>{b.author}</a>
+        )}
+      </div>
+      {b.date_read && (
+        <span className="shrink-0" style={{ fontFamily: "var(--mono)", fontSize: "0.66rem", color: "var(--parchment-dim)", opacity: 0.6 }}>{b.date_read}</span>
+      )}
     </div>
   );
 }

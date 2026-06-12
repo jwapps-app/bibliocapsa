@@ -3,12 +3,22 @@ Lending management — track physical books loaned to anyone.
 Who has it, when it's due, overdue alerts.
 """
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
 
 router = APIRouter()
+
+
+def _require_admin(request: Request) -> dict:
+    """Lending is owner-managed (tracks who borrowed physical books) and exposes
+    borrower PII, so every endpoint is admin-only."""
+    from .. import auth
+    u = auth.authenticate_request(request)
+    if not u or u.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return u
 
 
 class LoanCreate(BaseModel):
@@ -102,11 +112,13 @@ def _enrich(loans: list[Loan]) -> list[Loan]:
     return loans
 
 
-@router.get("", response_model=list[Loan], summary="List all loans")
+@router.get("", response_model=list[Loan], summary="List all loans (admin)")
 def list_loans(
+    request: Request,
     active_only: bool = Query(True, description="Only show unreturned loans"),
     borrower: Optional[str] = Query(None),
 ):
+    _require_admin(request)
     try:
         conn = _pg()
         cur = conn.cursor()
@@ -125,11 +137,12 @@ def list_loans(
         conn.close()
         return _enrich([_to_loan(dict(r)) for r in rows])
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Database unavailable: {e}")
+        raise HTTPException(status_code=503, detail="Database unavailable")
 
 
-@router.post("", response_model=Loan, status_code=201, summary="Create a loan")
-def create_loan(loan: LoanCreate):
+@router.post("", response_model=Loan, status_code=201, summary="Create a loan (admin)")
+def create_loan(loan: LoanCreate, request: Request):
+    admin = _require_admin(request)
     try:
         conn = _pg()
         cur = conn.cursor()
@@ -141,19 +154,21 @@ def create_loan(loan: LoanCreate):
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
             RETURNING *
             """,
+            # lent_by comes from the session, never the client body.
             (loan.book_id, loan.book_source, loan.borrower_name, loan.borrower_email,
-             loan.borrower_phone, loan.lent_by, loan.due_date, loan.notes)
+             loan.borrower_phone, admin["id"], loan.due_date, loan.notes)
         )
         row = cur.fetchone()
         conn.commit()
         conn.close()
         return _to_loan(dict(row))
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Database error: {e}")
+    except Exception:
+        raise HTTPException(status_code=503, detail="Database error")
 
 
-@router.put("/{loan_id}", response_model=Loan, summary="Update a loan (return, extend)")
-def update_loan(loan_id: int, updates: LoanUpdate):
+@router.put("/{loan_id}", response_model=Loan, summary="Update a loan (return, extend) (admin)")
+def update_loan(loan_id: int, updates: LoanUpdate, request: Request):
+    _require_admin(request)
     try:
         conn = _pg()
         cur = conn.cursor()
@@ -176,12 +191,13 @@ def update_loan(loan_id: int, updates: LoanUpdate):
         return _to_loan(dict(row))
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Database error: {e}")
+    except Exception:
+        raise HTTPException(status_code=503, detail="Database error")
 
 
-@router.get("/overdue", response_model=list[Loan], summary="Get overdue loans")
-def get_overdue():
+@router.get("/overdue", response_model=list[Loan], summary="Get overdue loans (admin)")
+def get_overdue(request: Request):
+    _require_admin(request)
     try:
         conn = _pg()
         cur = conn.cursor()
@@ -192,4 +208,4 @@ def get_overdue():
         conn.close()
         return _enrich([_to_loan(dict(r)) for r in rows])
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Database unavailable: {e}")
+        raise HTTPException(status_code=503, detail="Database unavailable")
