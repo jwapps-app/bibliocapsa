@@ -13,7 +13,7 @@ import os
 import logging
 
 from .database import init_db, close_db
-from .routers import books, authors, series, tags, covers, sync, opds, health
+from .routers import books, authors, series, tags, covers, sync, opds, health, publishers
 from .routers import search, files, native_books, lending, reading, shelves, goodreads, settings, kosync
 from .routers import auth as auth_router
 from .routers import calibre_edit, webdav, stats, wishlist
@@ -136,6 +136,7 @@ app.include_router(books.router,        prefix="/api/books",         tags=["Book
 app.include_router(authors.router,      prefix="/api/authors",       tags=["Authors"])
 app.include_router(series.router,       prefix="/api/series",        tags=["Series"])
 app.include_router(tags.router,         prefix="/api/tags",          tags=["Tags"])
+app.include_router(publishers.router,   prefix="/api/publishers",    tags=["Publishers"])
 app.include_router(covers.router,       prefix="/api/covers",        tags=["Covers"])
 app.include_router(files.router,        prefix="/api/books",         tags=["Files"])
 app.include_router(sync.router,         prefix="/api/sync",          tags=["Sync"])

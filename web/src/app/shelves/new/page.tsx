@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { api } from "@/lib/api";
+import { Autocomplete } from "@/components/MetaInputs";
 import { ArrowLeft, Plus, Trash2, Sparkles, Loader2 } from "lucide-react";
 
 type FieldType = "text" | "rating" | "date" | "bool" | "number";
@@ -23,7 +24,7 @@ export default function NewSmartShelfPage() {
   const [match, setMatch] = useState<"all" | "any">("all");
   const [conds, setConds] = useState<{ field: string; op: string; value: string }[]>([{ field: "tag", op: "is", value: "" }]);
   const [fields, setFields] = useState<FieldDef[]>([]);
-  const [genres, setGenres] = useState<string[]>([]);
+  const [suggest, setSuggest] = useState<Record<string, string[]>>({});
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [count, setCount] = useState<number | null>(null);
@@ -41,7 +42,11 @@ export default function NewSmartShelfPage() {
     api.customColumns()
       .then(cols => setFields([...base, ...cols.map(c => ({ key: `custom:${c.label}`, label: c.name, type: DT_TO_TYPE(c.datatype) }))]))
       .catch(() => setFields(base));
-    api.tags().then(ts => setGenres(ts.map(t => t.name))).catch(() => {});
+    // Suggestion lists for the "pick a known thing" fields, keyed by field name.
+    api.tags().then(ts => setSuggest(s => ({ ...s, tag: ts.map(t => t.name) }))).catch(() => {});
+    api.authors({ page_size: 5000 }).then(a => setSuggest(s => ({ ...s, author: a.map(x => x.name) }))).catch(() => {});
+    api.series({ page_size: 5000 }).then(se => setSuggest(s => ({ ...s, series: se.map(x => x.name) }))).catch(() => {});
+    api.publishers().then(p => setSuggest(s => ({ ...s, publisher: p.map(x => x.name) }))).catch(() => {});
   }, []);
 
   const fieldDef = (key: string) => fields.find(f => f.key === key) ?? { key, label: key, type: "text" as FieldType };
@@ -127,13 +132,17 @@ export default function NewSmartShelfPage() {
                   {OPS[t].map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </select>
                 {!noValue && (
-                  <>
+                  suggest[c.field]?.length ? (
+                    <div style={{ flex: "1 1 8rem" }}>
+                      <Autocomplete value={c.value} onChange={v => update(i, { value: v })}
+                        suggestions={suggest[c.field]} placeholder={fieldDef(c.field).label.toLowerCase()} />
+                    </div>
+                  ) : (
                     <input className="bc-input" style={{ flex: "1 1 8rem" }}
-                      list={c.field === "tag" ? "genre-list" : undefined}
                       type={t === "date" ? "date" : (t === "rating" || t === "number") ? "number" : "text"}
                       value={c.value} onChange={e => update(i, { value: e.target.value })}
                       placeholder={t === "rating" ? "1–5" : "value"} />
-                  </>
+                  )
                 )}
                 {conds.length > 1 && (
                   <button onClick={() => setConds(cs => cs.filter((_, j) => j !== i))} style={{ color: "var(--parchment-dim)" }}><Trash2 className="w-4 h-4" /></button>
@@ -141,7 +150,6 @@ export default function NewSmartShelfPage() {
               </div>
             );
           })}
-          <datalist id="genre-list">{genres.map(g => <option key={g} value={g} />)}</datalist>
         </div>
 
         <button onClick={() => setConds(cs => [...cs, { field: "tag", op: "is", value: "" }])}

@@ -272,6 +272,7 @@ export const api = {
     return res.ok ? (await res.json()).next_index : 1;
   },
   tags:         ()                  => get<TagDetail[]>("/api/tags?page_size=5000"),
+  publishers:   ()                  => get<{ name: string; book_count: number }[]>("/api/publishers"),
   search:       (q: string, limit=20) => get<SearchResponse>(`/api/search?q=${encodeURIComponent(q)}&limit=${limit}`),
   fileUrl:      (id: number, fmt: string) => `/api/books/${id}/file/${fmt.toLowerCase()}`,
 

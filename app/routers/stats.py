@@ -35,6 +35,46 @@ def _user(request: Request) -> dict:
     return u
 
 
+def _finished_in_year(user_id: int, year: int) -> list[dict]:
+    """Books finished in `year`, as [{book_id, book_source, date_read}], merging
+    TWO sources of the read date so it doesn't matter where it came from:
+      1. the mapped Calibre "date read" column (where Calibre/Goodreads/KOReader
+         read dates all live — this is the library's source of truth), and
+      2. the per-user read_log (native/physical books, manual marks, re-reads).
+    Deduped by (source, book_id)."""
+    seen: dict = {}  # (source, book_id) -> date_read
+    # 1) The mapped Calibre "date read" column. The DATE is the signal — any book
+    #    with a read date in `year` counts, regardless of a separate read flag
+    #    (Goodreads/KOReader/Calibre all write the date here).
+    try:
+        from .settings import get_setting
+        from ..database import get_conn
+        col_date = get_setting("reading_col_date")
+        if col_date:
+            with get_conn() as cal:
+                dc = cal.execute("SELECT id FROM custom_columns WHERE label = ?", (col_date,)).fetchone()
+                if dc:
+                    for r in cal.execute(
+                        f"SELECT book, value FROM custom_column_{int(dc['id'])} WHERE value IS NOT NULL"
+                    ).fetchall():
+                        d = str(r["value"])[:10]
+                        if d[:4] == str(year):
+                            seen[("calibre", r["book"])] = d
+    except Exception:
+        pass
+    from .settings import _pg
+    conn = _pg()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT book_id, book_source, date_read FROM read_log "
+                    "WHERE user_id=%s AND date_read LIKE %s", (user_id, f"{year}-%"))
+        for r in cur.fetchall():
+            seen[(r["book_source"], r["book_id"])] = r["date_read"]
+    finally:
+        conn.close()
+    return [{"book_id": bid, "book_source": src, "date_read": d} for (src, bid), d in seen.items()]
+
+
 # ── Annual reading goal ───────────────────────────────────────────────────────
 class GoalBody(BaseModel):
     year: int
@@ -50,12 +90,11 @@ def _goal_state(user_id: int, year: int) -> dict:
         cur = conn.cursor()
         cur.execute("SELECT target FROM reading_goals WHERE user_id=%s AND year=%s", (user_id, year))
         row = cur.fetchone()
-        cur.execute("SELECT COUNT(*) AS c FROM read_log WHERE user_id=%s AND date_read LIKE %s",
-                    (user_id, f"{year}-%"))
-        count = cur.fetchone()["c"]
-        return {"year": year, "target": (row["target"] if row else None), "count": count}
+        target = row["target"] if row else None
     finally:
         conn.close()
+    count = len(_finished_in_year(user_id, year))
+    return {"year": year, "target": target, "count": count}
 
 
 @router.get("/goal", summary="Reading goal + progress for a year (defaults to this year)")
@@ -98,14 +137,7 @@ def year_review(request: Request, year: int = 0):
     from .settings import _pg
     from ..database import get_conn
 
-    conn = _pg()
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT book_id, book_source, date_read FROM read_log "
-                    "WHERE user_id=%s AND date_read LIKE %s", (u["id"], f"{year}-%"))
-        rows = cur.fetchall()
-    finally:
-        conn.close()
+    rows = _finished_in_year(u["id"], year)
 
     by_month = [0] * 12
     by_format = {"digital": 0, "physical": 0}

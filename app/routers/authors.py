@@ -15,7 +15,7 @@ def list_authors(
     request: Request,
     search: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
-    page_size: int = Query(100, ge=1, le=500),
+    page_size: int = Query(100, ge=1, le=5000),
 ):
     allowed = access.restriction_for_request(request)
     offset = (page - 1) * page_size

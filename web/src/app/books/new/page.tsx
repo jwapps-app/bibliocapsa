@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { ArrowLeft, Loader2, Check, Upload, BookPlus } from "lucide-react";
 import { api } from "@/lib/api";
+import { Autocomplete } from "@/components/MetaInputs";
 
 export default function NewBookPage() {
   const [mode, setMode] = useState<"physical" | "digital">("physical");
@@ -13,13 +14,19 @@ export default function NewBookPage() {
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [authorSug, setAuthorSug] = useState<string[]>([]);
+  const [pubSug, setPubSug] = useState<string[]>([]);
 
   // Digital upload (admin → queued for Calibre via Sync).
   const fileRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadMsg, setUploadMsg] = useState<string | null>(null);
 
-  useEffect(() => { api.me().then(u => setIsAdmin(u?.role === "admin")).catch(() => {}); }, []);
+  useEffect(() => {
+    api.me().then(u => setIsAdmin(u?.role === "admin")).catch(() => {});
+    api.authors({ page_size: 5000 }).then(a => setAuthorSug(a.map(x => x.name))).catch(() => {});
+    api.publishers().then(p => setPubSug(p.map(x => x.name))).catch(() => {});
+  }, []);
 
   const onUpload = async (file: File) => {
     setUploading(true); setUploadMsg(null);
@@ -113,11 +120,11 @@ export default function NewBookPage() {
 
         <form onSubmit={submit}>
           <Field label="Title"><input className="bc-input" value={f.title} onChange={set("title")} autoFocus /></Field>
-          <Field label="Author"><input className="bc-input" value={f.author} onChange={set("author")} /></Field>
+          <Field label="Author"><Autocomplete value={f.author} onChange={v => setF(p => ({ ...p, author: v }))} suggestions={authorSug} /></Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="ISBN"><input className="bc-input" value={f.isbn} onChange={set("isbn")} /></Field>
             <Field label="ISBN-13"><input className="bc-input" value={f.isbn13} onChange={set("isbn13")} /></Field>
-            <Field label="Publisher"><input className="bc-input" value={f.publisher} onChange={set("publisher")} /></Field>
+            <Field label="Publisher"><Autocomplete value={f.publisher} onChange={v => setF(p => ({ ...p, publisher: v }))} suggestions={pubSug} /></Field>
             <Field label="Published date"><input className="bc-input" value={f.published_date} onChange={set("published_date")} placeholder="e.g. 2019" /></Field>
             <Field label="Pages"><input className="bc-input" value={f.page_count} onChange={set("page_count")} inputMode="numeric" /></Field>
             <Field label="Location"><input className="bc-input" value={f.location} onChange={set("location")} placeholder="Shelf, room…" /></Field>
