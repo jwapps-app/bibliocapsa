@@ -44,6 +44,7 @@ export default function SettingsPage() {
   // ── Email: Kindle address (per user) + SMTP (admin) ──
   const [kindle, setKindle] = useState("");
   const [kindleMsg, setKindleMsg] = useState<string | null>(null);
+  const [kindleSender, setKindleSender] = useState<string | null>(null);
   const [smtp, setSmtp] = useState({ host: "", port: "587", user: "", password: "", from: "", tls: true });
   const [smtpMsg, setSmtpMsg] = useState<string | null>(null);
   const [smtpBusy, setSmtpBusy] = useState(false);
@@ -75,6 +76,7 @@ export default function SettingsPage() {
 
   // Populate forms from loaded data.
   useEffect(() => { if (user?.kindle_email) setKindle(user.kindle_email); }, [user]);
+  useEffect(() => { api.kindleInfo().then(d => setKindleSender(d.sender)).catch(() => {}); }, []);
   useEffect(() => {
     if (settings) setSmtp(s => ({
       ...s,
@@ -603,8 +605,31 @@ export default function SettingsPage() {
             <span style={{ fontFamily: "var(--serif)", fontSize: "1.05rem", color: "var(--parchment)" }}>Send to Kindle</span>
           </div>
           <p style={{ fontFamily: "var(--body)", fontSize: "0.85rem", color: "var(--parchment-dim)", opacity: 0.7 }} className="mb-4">
-            Your <code>@kindle.com</code> address. Find it at Amazon → Manage Your Content &amp; Devices → Preferences → Personal Document Settings.
-            Remember to add the library&apos;s send address there as an approved sender.
+            Email books straight to your Kindle. Two one-time steps:
+          </p>
+          {kindleSender ? (
+            <div className="mb-4 p-3 rounded-sm" style={{ background: "var(--ink)", border: "1px solid var(--ink-muted)" }}>
+              <p className="mb-2" style={{ fontFamily: "var(--body)", fontSize: "0.82rem", color: "var(--parchment-dim)" }}>
+                <strong style={{ color: "var(--parchment)" }}>1.</strong> On Amazon, add this sender to your{" "}
+                <strong style={{ color: "var(--parchment)" }}>Approved Personal Document E-mail List</strong>:
+              </p>
+              <code className="block mb-2 px-2 py-1 rounded-sm" style={{ fontFamily: "var(--mono)", fontSize: "0.85rem", color: "var(--gold-light)", background: "var(--ink-soft)" }}>{kindleSender}</code>
+              <a href="https://www.amazon.com/hz/mycd/myx#/home/settings/pdoc" target="_blank" rel="noopener noreferrer"
+                 className="inline-flex items-center gap-1 hover:underline"
+                 style={{ fontFamily: "var(--mono)", fontSize: "0.72rem", color: "var(--gold-light)" }}>
+                Open Amazon → Personal Document Settings ↗
+              </a>
+              <p className="mt-1.5" style={{ fontFamily: "var(--mono)", fontSize: "0.62rem", color: "var(--parchment-dim)", opacity: 0.6 }}>
+                (Or: Manage Your Content &amp; Devices → Preferences → Personal Document Settings. Outside the US, use your local Amazon site.)
+              </p>
+            </div>
+          ) : (
+            <p className="mb-4" style={{ fontFamily: "var(--mono)", fontSize: "0.72rem", color: "var(--parchment-dim)", opacity: 0.7 }}>
+              Email isn&apos;t set up on this server yet — ask an admin to configure SMTP below.
+            </p>
+          )}
+          <p className="mb-2" style={{ fontFamily: "var(--body)", fontSize: "0.85rem", color: "var(--parchment-dim)", opacity: 0.7 }}>
+            <strong style={{ color: "var(--parchment)" }}>2.</strong> Enter your <code>@kindle.com</code> address:
           </p>
           <div className="flex gap-2">
             <input className="bc-input flex-1" placeholder="you@kindle.com" value={kindle} onChange={e => setKindle(e.target.value)} />

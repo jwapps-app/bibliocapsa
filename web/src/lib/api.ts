@@ -273,6 +273,7 @@ export const api = {
   },
   tags:         ()                  => get<TagDetail[]>("/api/tags?page_size=5000"),
   publishers:   ()                  => get<{ name: string; book_count: number }[]>("/api/publishers"),
+  kindleInfo:   ()                  => get<{ sender: string | null; configured: boolean }>("/api/settings/kindle-info"),
   search:       (q: string, limit=20) => get<SearchResponse>(`/api/search?q=${encodeURIComponent(q)}&limit=${limit}`),
   fileUrl:      (id: number, fmt: string) => `/api/books/${id}/file/${fmt.toLowerCase()}`,
 

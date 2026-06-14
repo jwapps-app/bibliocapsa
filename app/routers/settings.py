@@ -119,6 +119,15 @@ def get_settings(request: Request):
     )
 
 
+@router.get("/kindle-info", summary="Send-to-Kindle sender address to approve (any signed-in user)")
+def kindle_info(request: Request):
+    # Member-readable (no admin gate): each user needs to know which sender address
+    # to add to their Amazon "Approved Personal Document E-mail List". Only the
+    # public From address + configured flag are returned — never the SMTP secret.
+    sender = get_setting(mailer.SMTP_FROM) or get_setting(mailer.SMTP_USER)
+    return {"sender": sender, "configured": mailer.is_configured()}
+
+
 @router.put("", response_model=SettingsView, summary="Update app settings (admin)")
 def update_settings(updates: SettingsUpdate, request: Request):
     _require_admin(request)
@@ -143,8 +152,8 @@ def update_settings(updates: SettingsUpdate, request: Request):
         return get_settings(request)
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Database error: {e}")
+    except Exception:
+        raise HTTPException(status_code=503, detail="Database error")
 
 
 @router.post("/smtp-test", summary="Send a test email (admin)")
