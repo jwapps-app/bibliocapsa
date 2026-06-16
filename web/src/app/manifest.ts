@@ -7,7 +7,7 @@ export default function manifest(): MetadataRoute.Manifest {
   return {
     name: "Bibliocapsa",
     short_name: "Bibliocapsa",
-    description: "Your personal library — ebooks and physical books — with KOReader sync.",
+    description: "Your personal library of ebooks and physical books, with KOReader sync.",
     id: "/",
     start_url: "/",
     scope: "/",
