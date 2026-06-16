@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { FaviconManager } from "@/components/FaviconManager";
+import { ServiceWorkerRegister } from "./sw-register";
 
 export const metadata: Metadata = {
   title: { default: "Bibliocapsa", template: "%s — Bibliocapsa" },
@@ -14,6 +15,9 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   maximumScale: 1,
+  // Matches the manifest background so the iOS/Android status bar and splash
+  // blend into the app shell.
+  themeColor: "#17130e",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -23,7 +27,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         {/* Apply saved theme/font before paint to avoid a flash */}
         <script dangerouslySetInnerHTML={{ __html: `(function(){try{var t=localStorage.getItem('bc-theme'),f=localStorage.getItem('bc-font');if(t)document.documentElement.dataset.theme=t;if(f)document.documentElement.dataset.font=f;}catch(e){}})();` }} />
       </head>
-      <body><FaviconManager />{children}</body>
+      <body><FaviconManager /><ServiceWorkerRegister />{children}</body>
     </html>
   );
 }
