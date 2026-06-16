@@ -299,13 +299,17 @@ function EpubReader({ bookId }: { bookId: number }) {
   const [searchResults, setSearchResults] = useState<{ cfi: string; excerpt: string }[]>([]);
   const [searching, setSearching] = useState(false);
   const lastHighlight = useRef<string | null>(null);
+  // Set once the reader navigates (page turn / TOC / search). Cancels the
+  // deferred percentage-resume jump so we never yank them off a page they've
+  // already started reading while the location index is still building.
+  const userInteractedRef = useRef(false);
   const initialQ = useSearchParams().get("q") || "";
   const [fontSize, setFontSize] = useState(110);
   const [theme, setTheme] = useState<Theme>("light");
   const [flow, setFlow] = useState<"paginated" | "scrolled-doc">("paginated");
 
-  const next = useCallback(() => renditionRef.current?.next(), []);
-  const prev = useCallback(() => renditionRef.current?.prev(), []);
+  const next = useCallback(() => { userInteractedRef.current = true; renditionRef.current?.next(); }, []);
+  const prev = useCallback(() => { userInteractedRef.current = true; renditionRef.current?.prev(); }, []);
   // Resolve a TOC href to something epub.js can actually display. TOC hrefs
   // often don't match spine href keys exactly (directory prefixes, encoding, or
   // anchors into a shared file), which makes display() silently do nothing.
@@ -329,6 +333,7 @@ function EpubReader({ bookId }: { bookId: number }) {
   const goTo = useCallback(async (href: string) => {
     const r = renditionRef.current;
     if (!r || !href) return;
+    userInteractedRef.current = true;
     const target = resolveHref(href);
     try {
       await r.display(target);
@@ -365,6 +370,7 @@ function EpubReader({ bookId }: { bookId: number }) {
 
   const goToCfi = useCallback(async (cfi: string) => {
     const r = renditionRef.current; if (!r) return;
+    userInteractedRef.current = true;
     try {
       await r.display(cfi);
       if (lastHighlight.current) { try { r.annotations.remove(lastHighlight.current, "highlight"); } catch {} }
@@ -473,13 +479,31 @@ function EpubReader({ bookId }: { bookId: number }) {
           const cached = localStorage.getItem(cacheKey);
           if (cached) { book.locations.load(cached); locationsReady = true; }
         } catch {}
-        // Generate-on-demand: awaited only by the percentage-resume fallback
-        // (rare — no exact CFI and no KOReader chapter). Otherwise never blocks.
-        const ensureLocations = async () => {
-          if (locationsReady) return;
-          await book.locations.generate(1024);
-          locationsReady = true;
-          try { localStorage.setItem(cacheKey, book.locations.save()); } catch {}
+        // Generate-on-demand, idempotent: the percentage-resume fallback and the
+        // background warm-up below share this single promise (never double-run).
+        let locGen: Promise<void> | null = null;
+        const ensureLocations = (): Promise<void> => {
+          if (locationsReady) return Promise.resolve();
+          if (!locGen) {
+            locGen = book.locations.generate(1024).then(() => {
+              locationsReady = true;
+              try { localStorage.setItem(cacheKey, book.locations.save()); } catch {}
+            });
+          }
+          return locGen as Promise<void>;
+        };
+        // Resume to a stored percentage WITHOUT blocking the open: the book is
+        // already on page 1, so we let the index build in the background and jump
+        // to the exact spot once it's ready — unless the reader has meanwhile
+        // started turning pages (then we leave them where they are).
+        const resumeByPercentage = (pct: number) => {
+          ensureLocations().then(() => {
+            if (cancelled || userInteractedRef.current) return;
+            try {
+              const cfi = book.locations.cfiFromPercentage(pct);
+              return rendition.display(cfi).then(() => snapToHeading(cfi));
+            } catch {}
+          }).catch(() => {});
         };
         if (cancelled) return;
 
@@ -508,16 +532,10 @@ function EpubReader({ bookId }: { bookId: number }) {
             if (section && section.href) {
               await rendition.display(section.href);  // chapter start — accurate
             } else if (sy.percentage != null) {
-              await ensureLocations();
-              const cfi = book.locations.cfiFromPercentage(sy.percentage);
-              await rendition.display(cfi);
-              await snapToHeading(cfi);
+              resumeByPercentage(sy.percentage);
             }
           } else if (br?.percentage != null) {
-            await ensureLocations();
-            const cfi = book.locations.cfiFromPercentage(br.percentage);
-            await rendition.display(cfi);
-            await snapToHeading(cfi);
+            resumeByPercentage(br.percentage);
           }
         } catch { /* fall back to start */ }
 
@@ -539,8 +557,8 @@ function EpubReader({ bookId }: { bookId: number }) {
         });
 
         const onKey = (e: KeyboardEvent) => {
-          if (e.key === "ArrowRight") rendition.next();
-          if (e.key === "ArrowLeft") rendition.prev();
+          if (e.key === "ArrowRight") { userInteractedRef.current = true; rendition.next(); }
+          if (e.key === "ArrowLeft") { userInteractedRef.current = true; rendition.prev(); }
         };
         rendition.on("keyup", onKey);
         document.addEventListener("keyup", onKey);
@@ -552,9 +570,7 @@ function EpubReader({ bookId }: { bookId: number }) {
         // cache or already generated for a percentage resume above. (Until it's
         // ready, the relocated handler falls back to epub.js's own percentage.)
         if (!locationsReady && !cancelled) {
-          book.locations.generate(1024)
-            .then(() => { locationsReady = true; try { localStorage.setItem(cacheKey, book.locations.save()); } catch {} })
-            .catch(() => {});
+          ensureLocations().catch(() => {});
         }
 
         // Arriving from a global search → open the search panel and run it.
