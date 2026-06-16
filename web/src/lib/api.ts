@@ -76,7 +76,7 @@ async function get<T>(path: string): Promise<T> {
   // protected routes authenticate. On the client, the browser sends it itself.
   if (typeof window === "undefined") {
     const { cookies } = await import("next/headers");
-    const session = cookies().get("bibliocapsa_session");
+    const session = (await cookies()).get("bibliocapsa_session");
     if (session) headers["Cookie"] = `bibliocapsa_session=${session.value}`;
   }
   const res = await fetch(`${BASE}${path}`, { cache: "no-store", headers, credentials: "same-origin" });

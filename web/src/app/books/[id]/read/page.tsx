@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback, Suspense } from "react";
+import { useEffect, useRef, useState, useCallback, Suspense, use } from "react";
 import { useSearchParams } from "next/navigation";
 import { ArrowLeft, ChevronLeft, ChevronRight, Loader2, Settings2, Minus, Plus, List, X, Search, Info } from "lucide-react";
 import { api } from "@/lib/api";
@@ -12,10 +12,11 @@ const THEMES: Record<Theme, { bg: string; color: string }> = {
   dark:  { bg: "#1a1713", color: "#d4c8b0" },
 };
 
-export default function ReaderPage({ params }: { params: { id: string } }) {
+export default function ReaderPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = use(params);
   return (
     <Suspense fallback={null}>
-      <ReaderDispatch id={Number(params.id)} />
+      <ReaderDispatch id={Number(id)} />
     </Suspense>
   );
 }

@@ -56,20 +56,21 @@ function SortRow({ searchParams, activeSort, activeDir, sortOptions }: {
 }
 
 interface PageProps {
-  searchParams: {
+  searchParams: Promise<{
     search?: string; view?: string; shelf?: string;
     series_id?: string; author_id?: string; tag_id?: string;
     sort_by?: string; sort_dir?: string; collapse?: string;
     format?: string; cols?: string; custom?: string; read?: string;
-  };
+  }>;
 }
 
-export default async function HomePage({ searchParams }: PageProps) {
+export default async function HomePage({ searchParams: searchParamsPromise }: PageProps) {
+  const searchParams = await searchParamsPromise;
   const view = searchParams.view;
   const collapse = searchParams.collapse === "1";
   // URL ?cols wins (shareable/explicit); otherwise fall back to the saved cookie,
   // then the default 7 (desktop target; the grid steps down on smaller screens).
-  const savedCols = cookies().get("cols")?.value;
+  const savedCols = (await cookies()).get("cols")?.value;
   const cols = Math.min(8, Math.max(2, Number(searchParams.cols ?? savedCols ?? 7)));
   const PAGE_SIZE = 48;
 
@@ -230,7 +231,7 @@ function CountBreadcrumb({ activeFilter, total }: { activeFilter: boolean; total
   );
 }
 
-function FormatFilter({ searchParams }: { searchParams: PageProps["searchParams"] }) {
+function FormatFilter({ searchParams }: { searchParams: Awaited<PageProps["searchParams"]> }) {
   const active = searchParams.format ?? "all";
   const rest = Object.fromEntries(Object.entries(searchParams).filter(([,v])=>v) as [string,string][]);
   return (
@@ -362,7 +363,7 @@ async function ShelfView({ shelfId, cols }: { shelfId: number; cols: number }) {
 
   // Forward the session cookie so the auth-gated API authenticates this SSR fetch.
   const { cookies } = await import("next/headers");
-  const session = cookies().get("bibliocapsa_session");
+  const session = (await cookies()).get("bibliocapsa_session");
   const headers: Record<string, string> = session
     ? { Cookie: `bibliocapsa_session=${session.value}` } : {};
 

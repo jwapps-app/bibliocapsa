@@ -16,14 +16,16 @@ import { SafeHtml } from "@/components/SafeHtml";
 
 export default async function BookPage({
   params, searchParams,
-}: { params: { id: string }; searchParams: { source?: string } }) {
-  if (searchParams.source === "native") {
-    const nb = await api.nativeBook(Number(params.id)).catch(() => null);
+}: { params: Promise<{ id: string }>; searchParams: Promise<{ source?: string }> }) {
+  const { id } = await params;
+  const { source } = await searchParams;
+  if (source === "native") {
+    const nb = await api.nativeBook(Number(id)).catch(() => null);
     if (!nb) notFound();
     return <NativeBookDetail book={nb} />;
   }
 
-  const book = await api.book(Number(params.id)).catch(() => null);
+  const book = await api.book(Number(id)).catch(() => null);
   if (!book) notFound();
 
   const allAuthors = book.authors.map(a => a.name).join(", ");
