@@ -12,9 +12,11 @@ GHCR_USER="${GHCR_USER:?Set GHCR_USER to your lowercase GitHub username}"
 # Default the version from web/package.json (single source of truth — same value
 # the UI shows). Override with an explicit arg if needed.
 VERSION="${1:-$(python3 -c "import json;print(json.load(open('web/package.json'))['version'])" 2>/dev/null || echo latest)}"
-# NAS is x86 (amd64). Add linux/arm64 to also build for ARM hosts (slower on an
-# Apple-Silicon Mac since amd64 is emulated). e.g. PLATFORMS=linux/amd64,linux/arm64
-PLATFORMS="${PLATFORMS:-linux/amd64}"
+# Multi-arch by default so the same :latest tag runs natively on both x86_64
+# hosts (amd64) and Apple-Silicon / ARM hosts (arm64) — no emulation, and no
+# "repull didn't update" surprises from single-arch manifests. Override to build
+# a single arch (faster) with e.g. PLATFORMS=linux/arm64 ./build.sh
+PLATFORMS="${PLATFORMS:-linux/amd64,linux/arm64}"
 REG="ghcr.io/${GHCR_USER}"
 
 echo "→ Building ${REG}/bibliocapsa-{backend,web}:${VERSION}  [${PLATFORMS}]"
