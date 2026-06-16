@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback, Suspense, use } from "react";
 import { useSearchParams } from "next/navigation";
-import { ArrowLeft, ChevronLeft, ChevronRight, Loader2, Settings2, Minus, Plus, List, X, Search, Info } from "lucide-react";
+import { ArrowLeft, ChevronLeft, ChevronRight, Loader2, Settings2, Minus, Plus, List, X, Search, Info, Maximize2 } from "lucide-react";
 import { api } from "@/lib/api";
 
 type Theme = "light" | "sepia" | "dark";
@@ -44,6 +44,11 @@ function PdfReader({ bookId }: { bookId: number }) {
   const [searchResults, setSearchResults] = useState<{ page: number; excerpt: string }[]>([]);
   const [searching, setSearching] = useState(false);
   const initialQ = useSearchParams().get("q") || "";
+  // Page fit: "page" shows the whole page (default), "width" fills the width and
+  // scrolls. fitRef/pageRef keep renderPage a stable callback (no reload on toggle).
+  const [fit, setFit] = useState<"page" | "width">("page");
+  const fitRef = useRef<"page" | "width">("page");
+  const pageRef = useRef(1);
 
   const runSearch = useCallback(async (q: string) => {
     const pdf = pdfRef.current;
@@ -75,15 +80,28 @@ function PdfReader({ bookId }: { bookId: number }) {
     const pdf = pdfRef.current, canvas = canvasRef.current;
     if (!pdf || !canvas) return;
     const pg = await pdf.getPage(n);
-    const avail = (containerRef.current?.clientWidth ?? 800) - 16;
+    const cont = containerRef.current;
+    const availW = (cont?.clientWidth ?? 800) - 16;
+    const availH = (cont?.clientHeight ?? 1000) - 16;
     const base = pg.getViewport({ scale: 1 });
-    const scale = Math.min(3, Math.max(0.4, avail / base.width));
+    // "page": fit the whole page in the viewport. "width": fill width, scroll down.
+    const raw = fitRef.current === "page"
+      ? Math.min(availW / base.width, availH / base.height)
+      : availW / base.width;
+    const scale = Math.min(3, Math.max(0.4, raw));
     const vp = pg.getViewport({ scale });
     canvas.width = vp.width; canvas.height = vp.height;
     if (renderTask.current) { try { renderTask.current.cancel(); } catch {} }
     renderTask.current = pg.render({ canvasContext: canvas.getContext("2d"), viewport: vp });
     await renderTask.current.promise.catch(() => {});
   }, []);
+
+  const changeFit = useCallback((f: "page" | "width") => {
+    fitRef.current = f;
+    setFit(f);
+    try { localStorage.setItem("reader.pdfFit", f); } catch {}
+    if (readyRef.current) renderPage(pageRef.current);
+  }, [renderPage]);
 
   useEffect(() => {
     let cancelled = false;
@@ -92,11 +110,18 @@ function PdfReader({ bookId }: { bookId: number }) {
         const pdfjs: any = await import("pdfjs-dist");
         // Worker served as a static asset (see web/Dockerfile) — not bundled.
         pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
-        const res = await fetch(`/api/books/${bookId}/file/pdf?inline=1`);
-        if (!res.ok) throw new Error(res.status === 404 ? "No PDF available for this book" : `Failed to load (${res.status})`);
-        const buf = await res.arrayBuffer();
-        if (cancelled) return;
-        const pdf = await pdfjs.getDocument({ data: buf }).promise;
+        // Stream via HTTP range requests instead of downloading the whole file
+        // up front: pdf.js fetches just the structure + the current page so
+        // page 1 renders fast, then pulls the rest in the background (kept on
+        // for search / page jumps). The backend (Starlette FileResponse) serves
+        // Range requests; if ranges aren't available pdf.js falls back to a full
+        // download — i.e. never slower than before.
+        const pdf = await pdfjs.getDocument({
+          url: `/api/books/${bookId}/file/pdf?inline=1`,
+          rangeChunkSize: 262144,   // 256 KB chunks
+          disableStream: false,
+          disableAutoFetch: false,
+        }).promise;
         if (cancelled) return;
         pdfRef.current = pdf;
         setNumPages(pdf.numPages);
@@ -115,12 +140,19 @@ function PdfReader({ bookId }: { bookId: number }) {
         } catch {}
         target = Math.min(pdf.numPages, Math.max(1, target || 1));
         setPage(target);
+        pageRef.current = target;
         await renderPage(target);
         readyRef.current = true;
         setLoading(false);
         if (initialQ.trim()) { setSearchQ(initialQ); setShowSearch(true); runSearch(initialQ); }
       } catch (e: any) {
-        if (!cancelled) { setError(e.message ?? "Could not open PDF"); setLoading(false); }
+        if (!cancelled) {
+          const msg = e?.name === "MissingPDFException" || e?.status === 404
+            ? "No PDF available for this book"
+            : (e?.message ?? "Could not open PDF");
+          setError(msg);
+          setLoading(false);
+        }
       }
     })();
     return () => {
@@ -134,11 +166,28 @@ function PdfReader({ bookId }: { bookId: number }) {
   // Re-render + save when the page changes (after initial resume).
   useEffect(() => {
     if (!readyRef.current) return;
+    pageRef.current = page;
     renderPage(page);
     const pct = numPages ? page / numPages : 0;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => api.saveBookProgress(bookId, pct, String(page), String(page), "pdf"), 800);
   }, [page, numPages, bookId, renderPage]);
+
+  // Load saved fit preference once.
+  useEffect(() => {
+    try {
+      const f = localStorage.getItem("reader.pdfFit");
+      if (f === "page" || f === "width") { fitRef.current = f; setFit(f); }
+    } catch {}
+  }, []);
+
+  // Re-fit the current page on viewport resize / orientation change.
+  useEffect(() => {
+    let t: ReturnType<typeof setTimeout>;
+    const onResize = () => { clearTimeout(t); t = setTimeout(() => { if (readyRef.current) renderPage(pageRef.current); }, 150); };
+    window.addEventListener("resize", onResize);
+    return () => { window.removeEventListener("resize", onResize); clearTimeout(t); };
+  }, [renderPage]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -161,6 +210,11 @@ function PdfReader({ bookId }: { bookId: number }) {
           <button onClick={() => setShowSearch(true)} className="inline-flex items-center gap-1.5"
             style={{ fontFamily: "var(--mono)", fontSize: "0.78rem", color: "var(--parchment-dim)" }} aria-label="Search in PDF">
             <Search className="w-4 h-4" /> Search
+          </button>
+          <button onClick={() => changeFit(fit === "page" ? "width" : "page")} className="inline-flex items-center gap-1.5"
+            style={{ fontFamily: "var(--mono)", fontSize: "0.78rem", color: "var(--parchment-dim)" }}
+            aria-label="Toggle page fit" title={fit === "page" ? "Switch to fit-width" : "Switch to fit-page"}>
+            <Maximize2 className="w-4 h-4" /> {fit === "page" ? "Fit width" : "Fit page"}
           </button>
         </div>
         <div className="flex items-center gap-2" style={{ fontFamily: "var(--mono)", fontSize: "0.72rem", color: "var(--parchment-dim)" }}>
@@ -409,17 +463,24 @@ function EpubReader({ bookId }: { bookId: number }) {
           if (!cancelled) setToc(flat);
         } catch {}
 
-        // Locations: load from cache or generate (finer = better % precision).
+        // Locations power the % readout and percentage-based resume. Load the
+        // cached index if present; otherwise DON'T block the open on generating
+        // it (that's the slow part on a first open) — we build it in the
+        // background once the book is on screen, below.
         const cacheKey = `reader.loc.${bookId}`;
-        let loaded = false;
+        let locationsReady = false;
         try {
           const cached = localStorage.getItem(cacheKey);
-          if (cached) { book.locations.load(cached); loaded = true; }
+          if (cached) { book.locations.load(cached); locationsReady = true; }
         } catch {}
-        if (!loaded) {
-          await book.locations.generate(800);
+        // Generate-on-demand: awaited only by the percentage-resume fallback
+        // (rare — no exact CFI and no KOReader chapter). Otherwise never blocks.
+        const ensureLocations = async () => {
+          if (locationsReady) return;
+          await book.locations.generate(1024);
+          locationsReady = true;
           try { localStorage.setItem(cacheKey, book.locations.save()); } catch {}
-        }
+        };
         if (cancelled) return;
 
         // Resume. Priority:
@@ -447,11 +508,13 @@ function EpubReader({ bookId }: { bookId: number }) {
             if (section && section.href) {
               await rendition.display(section.href);  // chapter start — accurate
             } else if (sy.percentage != null) {
+              await ensureLocations();
               const cfi = book.locations.cfiFromPercentage(sy.percentage);
               await rendition.display(cfi);
               await snapToHeading(cfi);
             }
           } else if (br?.percentage != null) {
+            await ensureLocations();
             const cfi = book.locations.cfiFromPercentage(br.percentage);
             await rendition.display(cfi);
             await snapToHeading(cfi);
@@ -483,6 +546,16 @@ function EpubReader({ bookId }: { bookId: number }) {
         document.addEventListener("keyup", onKey);
 
         setLoading(false);
+
+        // Build the location index in the background so the % readout fills in
+        // shortly — without holding up the open. No-op if it was loaded from
+        // cache or already generated for a percentage resume above. (Until it's
+        // ready, the relocated handler falls back to epub.js's own percentage.)
+        if (!locationsReady && !cancelled) {
+          book.locations.generate(1024)
+            .then(() => { locationsReady = true; try { localStorage.setItem(cacheKey, book.locations.save()); } catch {} })
+            .catch(() => {});
+        }
 
         // Arriving from a global search → open the search panel and run it.
         if (initialQ.trim()) {
