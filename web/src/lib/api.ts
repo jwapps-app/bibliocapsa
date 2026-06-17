@@ -252,6 +252,10 @@ export const api = {
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail ?? `${res.status}`);
     return res.json();
   },
+  deleteNativeBook: async (id: number): Promise<void> => {
+    const res = await fetch(`/api/native/books/${id}`, { method: "DELETE" });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail ?? `${res.status}`);
+  },
   regenerateNativeCover: async (id: number): Promise<NativeBook> => {
     const res = await fetch(`/api/native/books/${id}/cover/generate`, { method: "POST" });
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail ?? `${res.status}`);

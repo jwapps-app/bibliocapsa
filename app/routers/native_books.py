@@ -688,3 +688,37 @@ def delete_native_cover(book_id: int, request: Request):
         raise
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Database error: {e}")
+
+
+@router.delete("/{book_id}", status_code=204, summary="Delete a native (physical/digital) book (admin)")
+def delete_native_book(book_id: int, request: Request):
+    _require_admin(request)
+    try:
+        conn = _pg()
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM native_books WHERE id = %s", (book_id,))
+        if not cur.fetchone():
+            conn.close()
+            raise HTTPException(status_code=404, detail=f"Book {book_id} not found")
+        # book_id is a plain integer in these tables (not an FK to native_books),
+        # so nothing cascades — clear every 'native' reference explicitly, then the
+        # book row, in one transaction. Table names are hardcoded literals.
+        for tbl in ("shelf_books", "book_ownership", "lending", "reading_progress",
+                    "document_map", "read_log", "wishlist"):
+            cur.execute(
+                f"DELETE FROM {tbl} WHERE book_id = %s AND book_source = 'native'",
+                (book_id,),
+            )
+        cur.execute("DELETE FROM native_books WHERE id = %s", (book_id,))
+        conn.commit()
+        conn.close()
+        # Best-effort: drop any cached/uploaded cover files for this book.
+        for ext in ("", ".type"):
+            try:
+                os.remove(_cover_path(book_id) + ext)
+            except OSError:
+                pass
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Database error: {e}")

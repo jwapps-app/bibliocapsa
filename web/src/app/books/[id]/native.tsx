@@ -18,6 +18,7 @@ export function NativeBookDetail({ book: initial }: { book: NativeBook }) {
   const [editing, setEditing] = useState(false);
   const [coverVer, setCoverVer] = useState(0); // cache-buster after cover changes
   const [histRefresh, setHistRefresh] = useState(0);
+  const [deleting, setDeleting] = useState(false);
 
   const coverSrc = `/api/native/books/${book.id}/cover${coverVer ? `?v=${coverVer}` : ""}`;
   const pubYear = book.published_date
@@ -33,19 +34,45 @@ export function NativeBookDetail({ book: initial }: { book: NativeBook }) {
     return updated;
   }
 
+  async function handleDelete() {
+    if (!confirm(
+      `Delete "${book.title}"?\n\nThis permanently removes the book and its shelf, ` +
+      `reading-history, and lending records. This cannot be undone.`
+    )) return;
+    setDeleting(true);
+    try {
+      await api.deleteNativeBook(book.id);
+      router.push("/?format=physical");
+      router.refresh();
+    } catch (e: any) {
+      setDeleting(false);
+      alert(e?.message ?? "Could not delete the book");
+    }
+  }
+
   return (
     <div className="min-h-screen">
       <div className="px-6 py-4 pl-16 lg:pl-6 border-b flex items-center justify-between"
            style={{ borderColor: "var(--ink-muted)" }}>
         <BackLink fallback="/?format=physical" />
         {!editing && (
-          <button onClick={() => setEditing(true)}
-            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-sm border transition-colors hover:border-[var(--gold-dim)]"
-            style={{ fontFamily: "var(--mono)", fontSize: "0.72rem", color: "var(--parchment-dim)",
-                     borderColor: "var(--ink-muted)", background: "var(--ink-soft)" }}>
-            <Pencil className="w-3.5 h-3.5" />
-            Edit details
-          </button>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setEditing(true)}
+              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-sm border transition-colors hover:border-[var(--gold-dim)]"
+              style={{ fontFamily: "var(--mono)", fontSize: "0.72rem", color: "var(--parchment-dim)",
+                       borderColor: "var(--ink-muted)", background: "var(--ink-soft)" }}>
+              <Pencil className="w-3.5 h-3.5" />
+              Edit details
+            </button>
+            <button onClick={handleDelete} disabled={deleting}
+              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-sm border transition-colors hover:border-[#a3503f] disabled:opacity-50"
+              style={{ fontFamily: "var(--mono)", fontSize: "0.72rem", color: "var(--parchment-dim)",
+                       borderColor: "var(--ink-muted)", background: "var(--ink-soft)" }}
+              aria-label="Delete book">
+              {deleting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+              Delete
+            </button>
+          </div>
         )}
       </div>
 
