@@ -527,6 +527,39 @@ def get_ownership(book_id: int):
         raise HTTPException(status_code=503, detail=str(e))
 
 
+class OwnershipUpdate(BaseModel):
+    has_physical: bool
+    physical_location: Optional[str] = None
+
+
+@router.put("/ownership/{book_id}", summary="Set physical ownership for a Calibre book")
+def set_ownership(book_id: int, body: OwnershipUpdate, request: Request):
+    """Mark a Calibre (digital) book as also physically owned, so it shows as
+    'Digital + Physical' everywhere instead of needing a duplicate native entry.
+    Mirrors what the Goodreads import records; `row_to_detail` already surfaces it
+    to the iOS delta sync and the web."""
+    _require_admin(request)
+    try:
+        pg = _pg()
+        cur = pg.cursor()
+        cur.execute(
+            """
+            INSERT INTO book_ownership (book_id, book_source, has_digital, has_physical, physical_location)
+            VALUES (%s, 'calibre', TRUE, %s, %s)
+            ON CONFLICT (book_id, book_source) DO UPDATE SET
+                has_digital=TRUE,
+                has_physical=EXCLUDED.has_physical,
+                physical_location=EXCLUDED.physical_location
+            """,
+            (book_id, body.has_physical, body.physical_location),
+        )
+        pg.commit()
+        pg.close()
+        return {"has_digital": True, "has_physical": body.has_physical, "physical_location": body.physical_location}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
 @router.get("/ratings/{book_id}", summary="Get Goodreads rating for a book")
 def get_rating(book_id: int, book_source: str = "calibre"):
     try:
