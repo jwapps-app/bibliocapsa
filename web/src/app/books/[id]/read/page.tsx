@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, useState, useCallback, Suspense, use } from "react";
 import { useSearchParams } from "next/navigation";
-import { ArrowLeft, ChevronLeft, ChevronRight, Loader2, Settings2, Minus, Plus, List, X, Search, Info, Maximize2 } from "lucide-react";
+import { ArrowLeft, ChevronLeft, ChevronRight, Loader2, Settings2, Minus, Plus, List, X, Search, Info, Maximize2, ScrollText, FileText } from "lucide-react";
+import { Virtuoso, VirtuosoHandle } from "react-virtuoso";
 import { api } from "@/lib/api";
 
 type Theme = "light" | "sepia" | "dark";
@@ -24,6 +25,38 @@ export default function ReaderPage({ params }: { params: Promise<{ id: string }>
 function ReaderDispatch({ id }: { id: number }) {
   const fmt = useSearchParams().get("fmt");
   return fmt === "pdf" ? <PdfReader bookId={id} /> : <EpubReader bookId={id} />;
+}
+
+// One page in the continuous-scroll PDF view. Renders itself to a canvas on
+// mount; Virtuoso only mounts items near the viewport, so off-screen pages cost
+// nothing. The min-height keeps the scroll height stable before the page paints.
+function PdfScrollPage({ pdf, n, width, aspect }: { pdf: any; n: number; width: number; aspect: number }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    if (!pdf || !width) return;
+    let cancelled = false;
+    let task: any;
+    (async () => {
+      try {
+        const pg = await pdf.getPage(n);
+        const base = pg.getViewport({ scale: 1 });
+        const scale = Math.min(3, Math.max(0.2, width / base.width));
+        const vp = pg.getViewport({ scale });
+        const canvas = ref.current;
+        if (!canvas || cancelled) return;
+        canvas.width = vp.width; canvas.height = vp.height;
+        task = pg.render({ canvasContext: canvas.getContext("2d"), viewport: vp });
+        await task.promise.catch(() => {});
+      } catch { /* skip page */ }
+    })();
+    return () => { cancelled = true; try { task?.cancel(); } catch {} };
+  }, [pdf, n, width]);
+  return (
+    <div style={{ display: "flex", justifyContent: "center", padding: "4px 0",
+                  minHeight: width ? Math.round(width * aspect) + 8 : undefined }}>
+      <canvas ref={ref} className="max-w-full h-auto shadow-lg" />
+    </div>
+  );
 }
 
 function PdfReader({ bookId }: { bookId: number }) {
@@ -49,6 +82,12 @@ function PdfReader({ bookId }: { bookId: number }) {
   const [fit, setFit] = useState<"page" | "width">("page");
   const fitRef = useRef<"page" | "width">("page");
   const pageRef = useRef(1);
+  // View mode: "paged" (one page, prev/next) or "scroll" (continuous, virtualized).
+  const [mode, setMode] = useState<"paged" | "scroll">("paged");
+  const modeRef = useRef<"paged" | "scroll">("paged");
+  const baseAspectRef = useRef(1.3);   // page height/width ratio, for scroll-item sizing
+  const [scrollWidth, setScrollWidth] = useState(0);
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
 
   const runSearch = useCallback(async (q: string) => {
     const pdf = pdfRef.current;
@@ -103,6 +142,30 @@ function PdfReader({ bookId }: { bookId: number }) {
     if (readyRef.current) renderPage(pageRef.current);
   }, [renderPage]);
 
+  const scheduleSave = useCallback((n: number) => {
+    const pct = numPages ? n / numPages : 0;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => api.saveBookProgress(bookId, pct, String(n), String(n), "pdf"), 800);
+  }, [numPages, bookId]);
+
+  // Jump to a page in either mode: scroll mode scrolls the virtual list; paged
+  // mode just sets the page (the page-render effect redraws the single canvas).
+  const goToPage = useCallback((n: number) => {
+    const clamped = Math.min(numPages || n, Math.max(1, n));
+    if (modeRef.current === "scroll") {
+      virtuosoRef.current?.scrollToIndex({ index: clamped - 1, align: "start" });
+    }
+    pageRef.current = clamped;
+    setPage(clamped);
+  }, [numPages]);
+
+  const changeMode = useCallback((m: "paged" | "scroll") => {
+    modeRef.current = m;
+    setMode(m);
+    try { localStorage.setItem("reader.pdfMode", m); } catch {}
+    if (m === "paged" && readyRef.current) renderPage(pageRef.current);
+  }, [renderPage]);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -125,6 +188,13 @@ function PdfReader({ bookId }: { bookId: number }) {
         if (cancelled) return;
         pdfRef.current = pdf;
         setNumPages(pdf.numPages);
+        // Page aspect ratio (assume uniform, true for books/Bibles) sizes the
+        // scroll-mode item slots so the scrollbar is right before pages paint.
+        try {
+          const p1 = await pdf.getPage(1);
+          const v1 = p1.getViewport({ scale: 1 });
+          if (v1.width) baseAspectRef.current = v1.height / v1.width;
+        } catch {}
 
         // Resume: most-recent of browser page / KOReader page (or percentage).
         let target = 1;
@@ -141,7 +211,9 @@ function PdfReader({ bookId }: { bookId: number }) {
         target = Math.min(pdf.numPages, Math.max(1, target || 1));
         setPage(target);
         pageRef.current = target;
-        await renderPage(target);
+        // Paged mode draws the single canvas now; scroll mode (Virtuoso) renders
+        // its own pages and opens at `target` via initialTopMostItemIndex.
+        if (modeRef.current === "paged") await renderPage(target);
         readyRef.current = true;
         setLoading(false);
         if (initialQ.trim()) { setSearchQ(initialQ); setShowSearch(true); runSearch(initialQ); }
@@ -165,21 +237,29 @@ function PdfReader({ bookId }: { bookId: number }) {
 
   // Re-render + save when the page changes (after initial resume).
   useEffect(() => {
-    if (!readyRef.current) return;
+    if (!readyRef.current || modeRef.current !== "paged") return;
     pageRef.current = page;
     renderPage(page);
-    const pct = numPages ? page / numPages : 0;
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => api.saveBookProgress(bookId, pct, String(page), String(page), "pdf"), 800);
-  }, [page, numPages, bookId, renderPage]);
+    scheduleSave(page);
+  }, [page, numPages, bookId, renderPage, scheduleSave]);
 
-  // Load saved fit preference once.
+  // Load saved fit + view-mode preferences once.
   useEffect(() => {
     try {
       const f = localStorage.getItem("reader.pdfFit");
       if (f === "page" || f === "width") { fitRef.current = f; setFit(f); }
+      const m = localStorage.getItem("reader.pdfMode");
+      if (m === "paged" || m === "scroll") { modeRef.current = m; setMode(m); }
     } catch {}
   }, []);
+
+  // Track available width so scroll-mode pages render crisp; re-measure on resize.
+  useEffect(() => {
+    const measure = () => setScrollWidth(Math.max(0, (containerRef.current?.clientWidth ?? 0) - 24));
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [mode]);
 
   // Re-fit the current page on viewport resize / orientation change.
   useEffect(() => {
@@ -191,12 +271,12 @@ function PdfReader({ bookId }: { bookId: number }) {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "ArrowRight") setPage(p => Math.min(numPages, p + 1));
-      if (e.key === "ArrowLeft") setPage(p => Math.max(1, p - 1));
+      if (e.key === "ArrowRight") goToPage(pageRef.current + 1);
+      if (e.key === "ArrowLeft") goToPage(pageRef.current - 1);
     };
     document.addEventListener("keyup", onKey);
     return () => document.removeEventListener("keyup", onKey);
-  }, [numPages]);
+  }, [goToPage]);
 
   return (
     <div className="fixed inset-0 flex flex-col" style={{ background: "var(--ink)" }}>
@@ -211,19 +291,26 @@ function PdfReader({ bookId }: { bookId: number }) {
             style={{ fontFamily: "var(--mono)", fontSize: "0.78rem", color: "var(--parchment-dim)" }} aria-label="Search in PDF">
             <Search className="w-4 h-4" /> Search
           </button>
-          <button onClick={() => changeFit(fit === "page" ? "width" : "page")} className="inline-flex items-center gap-1.5"
+          <button onClick={() => changeMode(mode === "scroll" ? "paged" : "scroll")} className="inline-flex items-center gap-1.5"
             style={{ fontFamily: "var(--mono)", fontSize: "0.78rem", color: "var(--parchment-dim)" }}
-            aria-label="Toggle page fit" title={fit === "page" ? "Switch to fit-width" : "Switch to fit-page"}>
-            <Maximize2 className="w-4 h-4" /> {fit === "page" ? "Fit width" : "Fit page"}
+            aria-label="Toggle scroll / paged view" title={mode === "scroll" ? "Switch to paged view" : "Switch to scroll view"}>
+            {mode === "scroll" ? <FileText className="w-4 h-4" /> : <ScrollText className="w-4 h-4" />} {mode === "scroll" ? "Paged" : "Scroll"}
           </button>
+          {mode === "paged" && (
+            <button onClick={() => changeFit(fit === "page" ? "width" : "page")} className="inline-flex items-center gap-1.5"
+              style={{ fontFamily: "var(--mono)", fontSize: "0.78rem", color: "var(--parchment-dim)" }}
+              aria-label="Toggle page fit" title={fit === "page" ? "Switch to fit-width" : "Switch to fit-page"}>
+              <Maximize2 className="w-4 h-4" /> {fit === "page" ? "Fit width" : "Fit page"}
+            </button>
+          )}
         </div>
         <div className="flex items-center gap-2" style={{ fontFamily: "var(--mono)", fontSize: "0.72rem", color: "var(--parchment-dim)" }}>
-          <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1} className="disabled:opacity-30"><ChevronLeft className="w-4 h-4" /></button>
+          <button onClick={() => goToPage(page - 1)} disabled={page <= 1} className="disabled:opacity-30"><ChevronLeft className="w-4 h-4" /></button>
           <input type="number" min={1} max={numPages || 1} value={page}
-            onChange={e => { const v = parseInt(e.target.value, 10); if (!isNaN(v)) setPage(Math.min(numPages, Math.max(1, v))); }}
+            onChange={e => { const v = parseInt(e.target.value, 10); if (!isNaN(v)) goToPage(v); }}
             className="bc-input" style={{ width: "3.5rem", padding: "2px 4px", textAlign: "center" }} />
           <span style={{ color: "var(--gold-light)" }}>/ {numPages || "…"}</span>
-          <button onClick={() => setPage(p => Math.min(numPages, p + 1))} disabled={page >= numPages} className="disabled:opacity-30"><ChevronRight className="w-4 h-4" /></button>
+          <button onClick={() => goToPage(page + 1)} disabled={page >= numPages} className="disabled:opacity-30"><ChevronRight className="w-4 h-4" /></button>
         </div>
       </div>
 
@@ -257,7 +344,7 @@ function PdfReader({ bookId }: { bookId: number }) {
                     {searchResults.length}{searchResults.length >= 300 ? "+" : ""} page{searchResults.length === 1 ? "" : "s"} with matches
                   </div>
                   {searchResults.map((r, i) => (
-                    <button key={i} onClick={() => { setPage(r.page); setShowSearch(false); }}
+                    <button key={i} onClick={() => { goToPage(r.page); setShowSearch(false); }}
                       className="block w-full text-left px-4 py-2.5 transition-colors hover:bg-[rgba(107,78,30,0.2)]"
                       style={{ fontFamily: "var(--body)", fontSize: "0.82rem", color: "var(--parchment-dim)", borderBottom: "1px solid var(--ink-muted)" }}>
                       <span style={{ fontFamily: "var(--mono)", fontSize: "0.6rem", color: "var(--gold-light)" }}>p. {r.page}</span>{"  "}…{r.excerpt}…
@@ -270,12 +357,35 @@ function PdfReader({ bookId }: { bookId: number }) {
         </>
       )}
 
-      <div ref={containerRef} className="relative flex-1 min-h-0 overflow-auto flex justify-center" style={{ background: "#33312c" }}>
+      <div ref={containerRef}
+           className={`relative flex-1 min-h-0 ${mode === "scroll" ? "overflow-hidden" : "overflow-auto flex justify-center"}`}
+           style={{ background: "#33312c" }}>
         {loading && <div className="absolute inset-0 flex items-center justify-center z-20" style={{ color: "var(--parchment-dim)" }}><Loader2 className="w-6 h-6 animate-spin" /></div>}
         {error && <div className="absolute inset-0 flex items-center justify-center px-6 text-center z-20" style={{ fontFamily: "var(--body)", color: "var(--parchment-dim)" }}>{error}</div>}
-        <button onClick={() => setPage(p => Math.max(1, p - 1))} aria-label="Previous page" className="fixed left-0 top-12 bottom-0 w-[12%] z-10" style={{ background: "transparent" }} />
-        <button onClick={() => setPage(p => Math.min(numPages, p + 1))} aria-label="Next page" className="fixed right-0 top-12 bottom-0 w-[12%] z-10" style={{ background: "transparent" }} />
-        <canvas ref={canvasRef} className="my-2 max-w-full h-auto shadow-lg" style={{ alignSelf: "flex-start" }} />
+        {mode === "scroll" ? (
+          !loading && !error && numPages > 0 && scrollWidth > 0 && (
+            <Virtuoso
+              ref={virtuosoRef}
+              style={{ height: "100%", width: "100%" }}
+              totalCount={numPages}
+              initialTopMostItemIndex={Math.max(0, pageRef.current - 1)}
+              increaseViewportBy={600}
+              itemContent={(index) => (
+                <PdfScrollPage pdf={pdfRef.current} n={index + 1} width={scrollWidth} aspect={baseAspectRef.current} />
+              )}
+              rangeChanged={(r) => {
+                const cur = r.startIndex + 1;
+                if (cur >= 1 && readyRef.current) { pageRef.current = cur; setPage(cur); scheduleSave(cur); }
+              }}
+            />
+          )
+        ) : (
+          <>
+            <button onClick={() => goToPage(page - 1)} aria-label="Previous page" className="fixed left-0 top-12 bottom-0 w-[12%] z-10" style={{ background: "transparent" }} />
+            <button onClick={() => goToPage(page + 1)} aria-label="Next page" className="fixed right-0 top-12 bottom-0 w-[12%] z-10" style={{ background: "transparent" }} />
+            <canvas ref={canvasRef} className="my-2 max-w-full h-auto shadow-lg" style={{ alignSelf: "flex-start" }} />
+          </>
+        )}
       </div>
     </div>
   );
@@ -637,6 +747,12 @@ function EpubReader({ bookId }: { bookId: number }) {
             aria-label="Search in book">
             <Search className="w-4 h-4" /> Search
           </button>
+          <button onClick={() => setFlow(flow === "scrolled-doc" ? "paginated" : "scrolled-doc")}
+            className="inline-flex items-center gap-1.5"
+            style={{ fontFamily: "var(--mono)", fontSize: "0.78rem", color: "var(--parchment-dim)" }}
+            aria-label="Toggle scroll / paged view" title={flow === "scrolled-doc" ? "Switch to paged view" : "Switch to scroll view"}>
+            {flow === "scrolled-doc" ? <FileText className="w-4 h-4" /> : <ScrollText className="w-4 h-4" />} {flow === "scrolled-doc" ? "Paged" : "Scroll"}
+          </button>
         </div>
         <div className="flex items-center gap-4">
           <span className="inline-flex items-center gap-1.5">
@@ -750,18 +866,6 @@ function EpubReader({ bookId }: { bookId: number }) {
                          color: theme === t ? "var(--gold-light)" : "var(--parchment-dim)",
                          background: THEMES[t].bg, textTransform: "capitalize" }}>
                 <span style={{ color: THEMES[t].color }}>{t}</span>
-              </button>
-            ))}
-          </div>
-          <div className="flex items-center gap-1.5">
-            {([["paginated", "Paged"], ["scrolled-doc", "Scroll"]] as const).map(([mode, label]) => (
-              <button key={mode} onClick={() => setFlow(mode)}
-                className="px-2.5 py-1 rounded-sm border"
-                style={{ fontFamily: "var(--mono)", fontSize: "0.65rem",
-                         borderColor: flow === mode ? "var(--gold)" : "var(--ink-muted)",
-                         color: flow === mode ? "var(--gold-light)" : "var(--parchment-dim)",
-                         background: "transparent" }}>
-                {label}
               </button>
             ))}
           </div>
