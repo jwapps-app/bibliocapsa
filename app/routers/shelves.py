@@ -253,8 +253,9 @@ def _resolve_smart_shelf(rules: dict, base_url: str, username: str = None, allow
                     series_name=row["series_name"], series_index=row["series_index"],
                     percentage=p["percentage"],
                 ))
-        # Physical books manually marked "currently reading".
-        if rules.get("status", "reading") == "reading":
+        # Physical books manually marked "currently reading" (not for genre-
+        # restricted users — native books aren't Calibre-genre-tagged).
+        if rules.get("status", "reading") == "reading" and allowed is None:
             try:
                 pg = _pg(); ncur = pg.cursor()
                 ncur.execute("SELECT id, title, author, cover_url FROM native_books WHERE reading_status = 'reading' ORDER BY updated_at DESC")
@@ -275,30 +276,38 @@ def _resolve_smart_shelf(rules: dict, base_url: str, username: str = None, allow
         if shelf_type == "most_recent":
             import datetime as _dt
             limit = rules.get("limit", 50)
+            # Apply the genre restriction BEFORE the limit, so a restricted user
+            # gets their N most-recent *allowed* books — not the allowed subset of
+            # the global N (which left the shelf nearly empty).
+            cal_pred, cp = access.calibre_predicate(allowed, "b")
+            where = f"WHERE {cal_pred}" if cal_pred else ""
             cal = conn.execute(
-                """
+                f"""
                 SELECT b.id, b.title, b.has_cover, b.series_index, b.timestamp,
                        (SELECT GROUP_CONCAT(a.name, ', ') FROM authors a
                         JOIN books_authors_link bal ON bal.author=a.id WHERE bal.book=b.id) as authors,
                        (SELECT s.name FROM series s JOIN books_series_link bsl ON bsl.series=s.id
                         WHERE bsl.book=b.id LIMIT 1) as series_name
-                FROM books b ORDER BY b.timestamp DESC LIMIT ?
+                FROM books b {where} ORDER BY b.timestamp DESC LIMIT ?
                 """,
-                (limit,)
+                cp + [limit]
             ).fetchall()
             native = []
-            try:
-                pg = _pg(); ncur = pg.cursor()
-                # Use the real added-date (Goodreads "Date Added" for imports),
-                # falling back to row-creation time — otherwise a bulk import makes
-                # every physical book look "added today" and floods this shelf,
-                # burying genuinely-recent digital books.
-                ncur.execute("SELECT id, title, author, cover_url, "
-                             "EXTRACT(EPOCH FROM COALESCE(date_added, created_at)) AS ek "
-                             "FROM native_books ORDER BY COALESCE(date_added, created_at) DESC LIMIT %s", (limit,))
-                native = ncur.fetchall(); pg.close()
-            except Exception:
-                pass
+            # Genre-restricted users (e.g. a kid) don't see native/physical books
+            # in smart shelves — those aren't Calibre-genre-tagged.
+            if allowed is None:
+                try:
+                    pg = _pg(); ncur = pg.cursor()
+                    # Use the real added-date (Goodreads "Date Added" for imports),
+                    # falling back to row-creation time — otherwise a bulk import makes
+                    # every physical book look "added today" and floods this shelf,
+                    # burying genuinely-recent digital books.
+                    ncur.execute("SELECT id, title, author, cover_url, "
+                                 "EXTRACT(EPOCH FROM COALESCE(date_added, created_at)) AS ek "
+                                 "FROM native_books ORDER BY COALESCE(date_added, created_at) DESC LIMIT %s", (limit,))
+                    native = ncur.fetchall(); pg.close()
+                except Exception:
+                    pass
 
             def _cal_epoch(ts):
                 try:
@@ -326,18 +335,20 @@ def _resolve_smart_shelf(rules: dict, base_url: str, username: str = None, allow
 
         elif shelf_type == "recently_added":
             days = rules.get("days", 30)
+            cal_pred, cp = access.calibre_predicate(allowed, "b")
+            extra = f" AND {cal_pred}" if cal_pred else ""
             rows = conn.execute(
-                """
+                f"""
                 SELECT b.id, b.title, b.has_cover, b.series_index,
                        (SELECT GROUP_CONCAT(a.name, ', ') FROM authors a
                         JOIN books_authors_link bal ON bal.author=a.id WHERE bal.book=b.id) as authors,
                        (SELECT s.name FROM series s JOIN books_series_link bsl ON bsl.series=s.id
                         WHERE bsl.book=b.id LIMIT 1) as series_name
                 FROM books b
-                WHERE substr(b.timestamp, 1, 19) >= strftime('%Y-%m-%d %H:%M:%S', 'now', ?)
+                WHERE substr(b.timestamp, 1, 19) >= strftime('%Y-%m-%d %H:%M:%S', 'now', ?){extra}
                 ORDER BY b.timestamp DESC LIMIT 50
                 """,
-                (f"-{days} days",)
+                [f"-{days} days"] + cp
             ).fetchall()
 
         elif shelf_type == "min_rating":
@@ -364,6 +375,8 @@ def _resolve_smart_shelf(rules: dict, base_url: str, username: str = None, allow
                                 key=lambda b: -eff[b])
             if qualifying:
                 ph = ",".join("?" * len(qualifying))
+                cal_pred, cp = access.calibre_predicate(allowed, "b")
+                extra = f" AND {cal_pred}" if cal_pred else ""
                 rows = conn.execute(
                     f"""
                     SELECT b.id, b.title, b.has_cover, b.series_index,
@@ -371,8 +384,8 @@ def _resolve_smart_shelf(rules: dict, base_url: str, username: str = None, allow
                             JOIN books_authors_link bal ON bal.author=a.id WHERE bal.book=b.id) as authors,
                            (SELECT s.name FROM series s JOIN books_series_link bsl ON bsl.series=s.id
                             WHERE bsl.book=b.id LIMIT 1) as series_name
-                    FROM books b WHERE b.id IN ({ph})
-                    """, qualifying
+                    FROM books b WHERE b.id IN ({ph}){extra}
+                    """, qualifying + cp
                 ).fetchall()
             else:
                 rows = []
