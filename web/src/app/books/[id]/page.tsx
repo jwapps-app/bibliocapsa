@@ -12,6 +12,7 @@ import { ReadingSessions } from "./ReadingSessions";
 import { CalibreRating } from "./CalibreRating";
 import { BookmarkButton } from "@/components/BookmarkButton";
 import { CalibreReadStatus } from "./CalibreReadStatus";
+import { PhysicalOwnership } from "./PhysicalOwnership";
 import { SafeHtml } from "@/components/SafeHtml";
 
 export default async function BookPage({
@@ -171,19 +172,10 @@ export default async function BookPage({
               {pubYear && <MetaItem icon={<Calendar className="w-3.5 h-3.5"/>} label={String(pubYear)} />}
               {book.publisher && <MetaItem icon={<Building2 className="w-3.5 h-3.5"/>} label={book.publisher} />}
               {book.isbn && <MetaItem icon={<Hash className="w-3.5 h-3.5"/>} label={book.isbn} />}
-              {/* Format ownership */}
-              {(() => {
-                const isPhysical = book.has_physical;
-                if (isPhysical) {
-                  return <MetaItem icon={
-                    <div style={{display:"flex",gap:"3px",alignItems:"center"}}>
-                      <div style={{width:"7px",height:"7px",borderRadius:"50%",background:"#4a9aba"}} />
-                      <div style={{width:"7px",height:"7px",borderRadius:"50%",background:"#c9933a"}} />
-                    </div>
-                  } label={`Digital + Physical${book.physical_location ? ` · ${book.physical_location}` : ""}`} />;
-                }
-                return null;
-              })()}
+              {/* Format ownership — Digital + Physical, with an admin "remove physical" control */}
+              {book.has_physical && (
+                <PhysicalOwnership bookId={book.id} location={book.physical_location} />
+              )}
             </div>
 
             {/* Tags */}

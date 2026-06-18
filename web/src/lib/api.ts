@@ -256,6 +256,14 @@ export const api = {
     const res = await fetch(`/api/native/books/${id}`, { method: "DELETE" });
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail ?? `${res.status}`);
   },
+  setCalibreOwnership: async (id: number, body: { has_physical: boolean; physical_location?: string | null }): Promise<void> => {
+    const res = await fetch(`/api/goodreads/ownership/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail ?? `${res.status}`);
+  },
   regenerateNativeCover: async (id: number): Promise<NativeBook> => {
     const res = await fetch(`/api/native/books/${id}/cover/generate`, { method: "POST" });
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail ?? `${res.status}`);
