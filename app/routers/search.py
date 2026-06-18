@@ -14,6 +14,15 @@ router = APIRouter()
 
 FTS_DB = os.getenv("CALIBRE_FTS_DB_PATH", "/calibre/full-text-search.db")
 
+# Common words dropped from multi-word queries so a natural phrase matches on its
+# meaningful words rather than every book containing "in"/"of"/"the".
+_STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from", "had",
+    "has", "have", "he", "her", "his", "in", "into", "is", "it", "its", "of", "on",
+    "or", "she", "that", "the", "their", "them", "they", "this", "to", "was",
+    "were", "will", "with", "you", "your",
+}
+
 
 class SearchResult(BaseModel):
     book_id: int
@@ -32,14 +41,23 @@ class SearchResponse(BaseModel):
 
 
 def _excerpt(text: str, query: str, context: int = 200) -> str:
-    """Extract a snippet of text around the first match."""
+    """Snippet around the best available match: prefer the full phrase, else the
+    first individual word that appears (so multi-word searches still show a
+    relevant passage rather than the start of the book)."""
     lower_text = text.lower()
-    lower_query = query.lower()
-    pos = lower_text.find(lower_query)
+    pos, match_len = -1, len(query)
+    for cand in [query, *query.split()]:
+        c = cand.lower().strip()
+        if not c:
+            continue
+        p = lower_text.find(c)
+        if p != -1:
+            pos, match_len = p, len(cand)
+            break
     if pos == -1:
         return text[:context].strip() + "…"
     start = max(0, pos - context // 2)
-    end = min(len(text), pos + len(query) + context // 2)
+    end = min(len(text), pos + match_len + context // 2)
     snippet = text[start:end].strip()
     if start > 0:
         snippet = "…" + snippet
@@ -83,49 +101,60 @@ def full_text_search(
         if not allowed_ids:
             return SearchResponse(query=q, total=0, results=[])
 
-    # Search in the full-text database
-    try:
-        fts_conn = sqlite3.connect(f"file:{FTS_DB}?mode=ro", uri=True)
-        fts_conn.row_factory = sqlite3.Row
+    # Prefer the BM25 index (relevance-ranked + stemmed); fall back to the simpler
+    # LIKE scan if the index is missing or still building. Both paths produce a
+    # normalized `hits` list of {book, format, excerpt}.
+    from .. import search_index
+    hits = None
+    total = 0
+    if search_index.is_ready():
+        try:
+            total, hits = search_index.search(q, allowed_ids, limit, offset)
+        except Exception:
+            hits = None  # fall back to LIKE
 
-        # Use LIKE for broad compatibility — no custom tokenizer needed
-        like_query = f"%{q}%"
-        where = "searchable_text LIKE ? AND searchable_text IS NOT NULL"
-        wparams: list = [like_query]
-        if allowed_ids is not None:
-            # Stash the allow-list in a TEMP table (SQLite keeps temp objects in a
-            # separate temp DB, so this works even on a read-only connection) and
-            # join via a subquery — avoids the ~999 host-parameter cap that a
-            # literal `book IN (?, ?, …)` would blow past for a broad allow-list
-            # (which previously 500'd restricted members).
-            fts_conn.execute("CREATE TEMP TABLE _allowed (book INTEGER PRIMARY KEY)")
-            fts_conn.executemany("INSERT OR IGNORE INTO _allowed (book) VALUES (?)",
-                                 [(i,) for i in allowed_ids])
-            where += " AND book IN (SELECT book FROM _allowed)"
+    if hits is None:
+        try:
+            fts_conn = sqlite3.connect(f"file:{FTS_DB}?mode=ro", uri=True)
+            fts_conn.row_factory = sqlite3.Row
+            # Match each word separately (any order/distance), exact phrase ranked
+            # first. (Calibre's FTS5 uses a custom tokenizer stock sqlite3 can't
+            # load, hence LIKE here rather than MATCH.)
+            raw_terms = [t for t in q.split() if t.strip()]
+            terms = [t for t in raw_terms if t.lower() not in _STOPWORDS] or raw_terms or [q]
+            term_conds = " AND ".join("searchable_text LIKE ?" for _ in terms)
+            where = f"({term_conds}) AND searchable_text IS NOT NULL"
+            wparams: list = [f"%{t}%" for t in terms]
+            if allowed_ids is not None:
+                fts_conn.execute("CREATE TEMP TABLE _allowed (book INTEGER PRIMARY KEY)")
+                fts_conn.executemany("INSERT OR IGNORE INTO _allowed (book) VALUES (?)",
+                                     [(i,) for i in allowed_ids])
+                where += " AND book IN (SELECT book FROM _allowed)"
+            rows = fts_conn.execute(
+                f"SELECT book, MIN(format) AS format, searchable_text FROM books_text WHERE {where} "
+                f"GROUP BY book ORDER BY (CASE WHEN searchable_text LIKE ? THEN 0 ELSE 1 END), book "
+                f"LIMIT ? OFFSET ?",
+                wparams + [f"%{q}%", limit, offset],
+            ).fetchall()
+            total_row = fts_conn.execute(
+                f"SELECT COUNT(DISTINCT book) FROM books_text WHERE {where}", wparams,
+            ).fetchone()
+            total = total_row[0] if total_row else 0
+            fts_conn.close()
+            hits = [{"book": r["book"], "format": r["format"],
+                     "excerpt": _excerpt(r["searchable_text"], q)} for r in rows]
+        except sqlite3.Error:
+            raise HTTPException(status_code=500, detail="Full-text search error")
 
-        rows = fts_conn.execute(
-            f"SELECT book, format, searchable_text FROM books_text WHERE {where} LIMIT ? OFFSET ?",
-            wparams + [limit, offset],
-        ).fetchall()
-
-        total_row = fts_conn.execute(
-            f"SELECT COUNT(*) FROM books_text WHERE {where}", wparams,
-        ).fetchone()
-        total = total_row[0] if total_row else 0
-
-        fts_conn.close()
-    except sqlite3.Error:
-        raise HTTPException(status_code=500, detail="Full-text search error")
-
-    if not rows:
+    if not hits:
         return SearchResponse(query=q, total=0, results=[])
 
     # Look up book metadata from Calibre
     results = []
 
     with get_conn() as meta_conn:
-        for row in rows:
-            book_id = row["book"]
+        for h in hits:
+            book_id = h["book"]
             book = meta_conn.execute(
                 "SELECT id, title, has_cover FROM books WHERE id = ?", (book_id,)
             ).fetchone()
@@ -133,7 +162,8 @@ def full_text_search(
             if not book:
                 continue
 
-            # Hide content the member isn't allowed to see.
+            # Hide content the member isn't allowed to see (defensive re-check on
+            # top of the query-level allow-list).
             if not access.is_calibre_book_allowed(meta_conn, book_id, allowed):
                 continue
 
@@ -148,17 +178,35 @@ def full_text_search(
             ).fetchall()
 
             author_names = [a["name"] for a in authors]
-            excerpt = _excerpt(row["searchable_text"], q)
             has_cover = bool(book["has_cover"])
 
             results.append(SearchResult(
                 book_id=book_id,
                 title=book["title"],
                 authors=author_names,
-                format=row["format"],
-                excerpt=excerpt,
+                format=h["format"],
+                excerpt=h["excerpt"],
                 has_cover=has_cover,
                 cover_url=f"{base_url}/api/covers/{book_id}" if has_cover else None,
             ))
 
     return SearchResponse(query=q, total=total, results=results)
+
+
+@router.get("/index-status", summary="BM25 search-index status (admin)")
+def index_status(request: Request):
+    from .. import auth, search_index
+    u = auth.authenticate_request(request)
+    if not u or u.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+    return search_index.status()
+
+
+@router.post("/reindex", summary="Refresh the BM25 search index (admin)")
+def reindex(request: Request):
+    from .. import auth, search_index
+    u = auth.authenticate_request(request)
+    if not u or u.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+    search_index.sync_async("manual")
+    return {"ok": True, "status": search_index.status()}

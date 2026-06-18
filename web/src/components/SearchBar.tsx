@@ -88,7 +88,7 @@ export function FullTextSearchBar() {
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 opacity-40" style={{color:"var(--parchment-dim)"}} />
           <input type="text" value={query} onChange={e=>setQuery(e.target.value)}
             onKeyDown={e=>e.key==="Enter"&&search()}
-            placeholder="Search inside books…"
+            placeholder={'Search inside books…  (use "quotes" for an exact phrase)'}
             className="w-full pl-10 pr-4 py-2.5 text-sm rounded-sm border focus:outline-none"
             style={{background:"var(--ink-muted)",borderColor:"var(--ink-muted)",color:"var(--parchment)",fontFamily:"var(--body)"}} />
         </div>
@@ -98,6 +98,9 @@ export function FullTextSearchBar() {
           {loading?"…":"Search"}
         </button>
       </div>
+      <p className="max-w-lg" style={{fontFamily:"var(--body)",fontSize:"0.72rem",color:"var(--parchment-dim)",opacity:0.55,marginTop:"0.4rem"}}>
+        Tip: put a phrase in <span style={{color:"var(--gold-light)",opacity:0.9}}>&quot;quotes&quot;</span> for an exact match, e.g. &quot;who done it&quot;.
+      </p>
       {total !== null && (
         <div>
           <div className="mb-4 opacity-40" style={{fontFamily:"var(--mono)",fontSize:"0.7rem",color:"var(--parchment-dim)"}}>

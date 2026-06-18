@@ -48,6 +48,13 @@ async def lifespan(app: FastAPI):
         init_postgres()
     except Exception as e:
         logger.warning(f"PostgreSQL not initialized: {e}")
+    # Bring the BM25 search index in sync with Calibre, in the background so it
+    # never delays startup or pegs the CPU (incremental: only changed books).
+    try:
+        from . import search_index
+        search_index.start_background()
+    except Exception as e:
+        logger.warning(f"Search index sync not started: {e}")
     yield
     close_db()
     logger.info("Bibliocapsa stopped.")
