@@ -204,7 +204,7 @@ def _build_query_where(conn, rules: dict):
 def _resolve_smart_shelf(rules: dict, base_url: str, username: str = None, allowed=None) -> list[ShelfBook]:
     """Execute a smart shelf query against Calibre's database."""
     from ..database import get_conn
-    from .. import access
+    from .. import access, calibre_read
     shelf_type = rules.get("type")
     books = []
 
@@ -224,11 +224,13 @@ def _resolve_smart_shelf(rules: dict, base_url: str, username: str = None, allow
             prog = pcur.fetchall(); pg.close()
         except Exception:
             return []
+        # Finished books (marked Read) drop out of Currently Reading on their own.
+        finished = calibre_read.read_book_ids([p["book_id"] for p in prog])
         with get_conn() as conn:
             seen = set()
             for p in prog:
                 bid = p["book_id"]
-                if bid in seen:
+                if bid in seen or bid in finished:
                     continue
                 if not access.is_calibre_book_allowed(conn, bid, allowed):
                     continue

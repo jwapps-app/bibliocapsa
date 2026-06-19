@@ -71,14 +71,17 @@ def current_reading(request: Request):
         raise HTTPException(status_code=503, detail=f"Database error: {e}")
 
     from ..database import get_conn
-    from .. import access
+    from .. import access, calibre_read
     allowed = access.restriction_for_request(request)
+    # A finished book (marked Read) should leave Currently Reading on its own,
+    # keeping its progress/stats — so exclude books that are now 'read'.
+    finished = calibre_read.read_book_ids([r["book_id"] for r in rows])
     out = []
     seen = set()
     with get_conn() as cal:
         for r in rows:
             bid = r["book_id"]
-            if bid in seen:
+            if bid in seen or bid in finished:
                 continue
             b = cal.execute("SELECT id, title, has_cover FROM books WHERE id = ?", (bid,)).fetchone()
             if not b:

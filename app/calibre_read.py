@@ -113,6 +113,19 @@ def calibre_column_statuses(book_ids) -> dict:
         return {}
 
 
+def read_book_ids(book_ids) -> set:
+    """The subset of `book_ids` marked 'read' — via our own store OR a mapped
+    Calibre read column. Used to drop finished books out of 'Currently Reading'
+    without touching their progress/stats (marking a book Read should remove it
+    from the reading list, not require a reset-to-unread)."""
+    ids = [int(i) for i in (book_ids or [])]
+    if not ids:
+        return set()
+    out = {bid for bid, s in statuses(ids).items() if s.get("status") == "read"}
+    out |= set(calibre_column_statuses(ids).keys())
+    return out
+
+
 def ids_by_status() -> dict:
     """{'read': set(book_id), 'reading': set(book_id)} across the whole library —
     used to build the unified Read/Unread filter."""

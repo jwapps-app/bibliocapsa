@@ -101,13 +101,19 @@ def get_read_status(book_id: int, request: Request):
 def set_read_status(book_id: int, body: ReadStatus, request: Request):
     _require_admin(request)
     from .. import calibre_read, read_history, auth
-    result = calibre_read.set_status(book_id, body.status, body.date_read)
+    from datetime import date as _date
+    # Default the finish date to today when marking Read without one, so the date
+    # is also queued into Calibre's mapped "date read" column (parity with the
+    # KOReader 99% path, which always supplies a date).
+    date_read = body.date_read
+    if body.status == "read" and not date_read:
+        date_read = _date.today().isoformat()
+    result = calibre_read.set_status(book_id, body.status, date_read)
     # Marking Read logs a finish date in the running read history (deduped per
     # day, so toggling doesn't spam). Adjust/add/remove dates via /reading/history.
     if result["status"] == "read":
         user = auth.authenticate_request(request)
         if user:
-            from datetime import date as _date
             read_history.add(book_id, "calibre", user["id"],
                              result["date_read"] or _date.today().isoformat(),
                              source="toggle", dedupe=True)
@@ -188,10 +194,14 @@ def set_reading_map(body: ReadingMap, request: Request):
     return {"ok": True}
 
 
-@router.post("/reading-sync", summary="Queue Calibre column updates from KOReader reading (admin)")
-def reading_sync(request: Request):
-    _require_admin(request)
-    from .. import auth, calibre_custom
+def _queue_reading_updates(username, user_id) -> dict:
+    """Fold a user's KOReader progress into the pending Calibre queue: books at
+    >=99% become 'read' (logging a finish date), and the mapped read / progress /
+    date columns are queued for the next Sync. Also mirrors status into
+    Bibliocapsa's own store so KOReader-read books show in the Read/Unread filter.
+    Returns {queued, books_with_progress}; a graceful no-op when no reading
+    columns are mapped or there's no progress."""
+    from .. import calibre_custom, calibre_read, read_history
     from .settings import get_setting
     from ..database import get_conn
     from datetime import datetime, timezone
@@ -199,12 +209,9 @@ def reading_sync(request: Request):
     col_read = get_setting("reading_col_read")
     col_prog = get_setting("reading_col_progress")
     col_date = get_setting("reading_col_date")
-    if not (col_read or col_prog or col_date):
-        raise HTTPException(status_code=400, detail="Configure reading columns first")
+    if not (col_read or col_prog or col_date) or not username:
+        return {"queued": 0, "books_with_progress": 0}
 
-    _user = auth.authenticate_request(request) or {}
-    username = _user.get("username")
-    user_id = _user.get("id")
     conn = overlay._pg()
     try:
         cur = conn.cursor()
@@ -225,7 +232,6 @@ def reading_sync(request: Request):
         if bid not in best or pct > best[bid][0]:
             best[bid] = (pct, r["ts"])
 
-    from .. import calibre_read, read_history
     queued = 0
     with get_conn() as cal:
         for bid, (pct, ts) in best.items():
@@ -254,6 +260,18 @@ def reading_sync(request: Request):
                 overlay.set_edits(bid, edits)
                 queued += 1
     return {"queued": queued, "books_with_progress": len(best)}
+
+
+@router.post("/reading-sync", summary="Queue Calibre column updates from KOReader reading (admin)")
+def reading_sync(request: Request):
+    _require_admin(request)
+    from .. import auth
+    from .settings import get_setting
+    if not (get_setting("reading_col_read") or get_setting("reading_col_progress")
+            or get_setting("reading_col_date")):
+        raise HTTPException(status_code=400, detail="Configure reading columns first")
+    u = auth.authenticate_request(request) or {}
+    return _queue_reading_updates(u.get("username"), u.get("id"))
 
 
 @router.get("/custom-columns", summary="Calibre custom-column definitions")
@@ -340,5 +358,14 @@ def sync_to_calibre(body: SyncRequest, request: Request):
     _require_admin(request)
     if not body.confirm:
         raise HTTPException(status_code=400, detail="Confirmation required (Calibre must be closed)")
-    from .. import calibre_sync
+    from .. import calibre_sync, auth
+    # Fold the signed-in user's latest KOReader reading (read status / % / finish
+    # date) into the pending queue first — so finishing a book at >=99% and then
+    # hitting Sync pushes its status + date to Calibre in one step, no separate
+    # "Queue reading updates". Best-effort: never let it block the actual push.
+    try:
+        u = auth.authenticate_request(request) or {}
+        _queue_reading_updates(u.get("username"), u.get("id"))
+    except Exception:
+        pass
     return calibre_sync.run_sync()
