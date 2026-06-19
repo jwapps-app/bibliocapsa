@@ -50,6 +50,7 @@ class ShelfBook(BaseModel):
     has_physical: bool = False
     has_digital: bool = True
     percentage: Optional[float] = None  # reading progress (0..1), for Currently Reading
+    reading_status: Optional[str] = None  # 'read' | 'reading' | None — drives the cover badge
 
 
 def _pg():
@@ -568,6 +569,33 @@ def delete_shelf(shelf_id: int, request: Request):
         raise HTTPException(status_code=503, detail="Database error")
 
 
+def _annotate_read_status(books: list) -> list:
+    """Set reading_status on each ShelfBook so shelf cards can show the read
+    checkmark — Calibre books from our store / mapped column, native from their
+    own column. Bulk lookups; best-effort."""
+    from .. import calibre_read
+    cal_ids = [b.book_id for b in books if b.book_source == "calibre"]
+    nat_ids = [b.book_id for b in books if b.book_source == "native"]
+    cal_stat: dict = {}
+    if cal_ids:
+        cal_stat = {bid: s.get("status") for bid, s in calibre_read.statuses(cal_ids).items()}
+        for bid, s in calibre_read.calibre_column_statuses(
+                [i for i in cal_ids if i not in cal_stat]).items():
+            cal_stat[bid] = s.get("status")
+    nat_stat: dict = {}
+    if nat_ids:
+        try:
+            pg = _pg(); cur = pg.cursor()
+            cur.execute("SELECT id, reading_status FROM native_books WHERE id = ANY(%s)", (nat_ids,))
+            nat_stat = {r["id"]: r["reading_status"] for r in cur.fetchall()}
+            pg.close()
+        except Exception:
+            pass
+    for b in books:
+        b.reading_status = (cal_stat if b.book_source == "calibre" else nat_stat).get(b.book_id)
+    return books
+
+
 @router.get("/{shelf_id}/books", response_model=list[ShelfBook], summary="Get books on a shelf")
 def get_shelf_books(shelf_id: int, request: Request):
     from .. import access
@@ -598,7 +626,7 @@ def get_shelf_books(shelf_id: int, request: Request):
                 with get_conn() as cc:
                     smart = [b for b in smart
                              if access.is_calibre_book_allowed(cc, b.book_id, allowed)]
-            return smart
+            return _annotate_read_status(smart)
 
         # Manual shelf — join with Calibre metadata
         conn = _pg()
@@ -676,7 +704,7 @@ def get_shelf_books(shelf_id: int, request: Request):
                             added_at=entry["added_at"],
                             location=nb.get("location"),
                         ))
-        return books
+        return _annotate_read_status(books)
     except HTTPException:
         raise
     except Exception as e:

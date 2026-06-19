@@ -1,5 +1,6 @@
 import type { BookSummary } from "@/lib/api";
 import { publicUrl } from "@/lib/api";
+import { Check } from "lucide-react";
 import clsx from "clsx";
 
 interface Props {
@@ -13,6 +14,7 @@ export function BookCard({ book, className }: Props) {
   const isNative = book.book_source === "native";
   const isDual = !isNative && book.has_physical === true;
   const isPhysicalOnly = isNative;
+  const isRead = book.reading_status === "read";
 
   const href = isNative ? `/books/${book.id}?source=native` : `/books/${book.id}`;
   // Calibre authors have a real id → go to their author page. Physical/native
@@ -58,21 +60,33 @@ export function BookCard({ book, className }: Props) {
           </div>
         )}
 
-        {/* Format dots — upper right corner */}
-        {(isDual || isPhysicalOnly) && (
-          <div style={{position:"absolute",top:"6px",right:"6px",display:"flex",gap:"3px",alignItems:"center",zIndex:10}}>
-            {isDual && (
-              <div style={{
-                width:"8px",height:"8px",borderRadius:"50%",
-                background:"#4a9aba",
-                boxShadow:"0 0 0 1px rgba(0,0,0,0.5), 0 0 4px rgba(74,154,186,0.8)",
-              }} title="Also owned as digital" />
+        {/* Upper-right cluster: format dots, then a 'read' check in the corner */}
+        {(isDual || isPhysicalOnly || isRead) && (
+          <div style={{position:"absolute",top:"6px",right:"6px",display:"flex",gap:"4px",alignItems:"center",zIndex:10}}>
+            {(isDual || isPhysicalOnly) && (
+              <div style={{display:"flex",gap:"3px",alignItems:"center"}}>
+                {isDual && (
+                  <div style={{
+                    width:"8px",height:"8px",borderRadius:"50%",
+                    background:"#4a9aba",
+                    boxShadow:"0 0 0 1px rgba(0,0,0,0.5), 0 0 4px rgba(74,154,186,0.8)",
+                  }} title="Also owned as digital" />
+                )}
+                <div style={{
+                  width:"8px",height:"8px",borderRadius:"50%",
+                  background:"#c9933a",
+                  boxShadow:"0 0 0 1px rgba(0,0,0,0.5), 0 0 4px rgba(201,147,58,0.8)",
+                }} title={book.physical_location ? `Physical · ${book.physical_location}` : "Physical copy"} />
+              </div>
             )}
-            <div style={{
-              width:"8px",height:"8px",borderRadius:"50%",
-              background:"#c9933a",
-              boxShadow:"0 0 0 1px rgba(0,0,0,0.5), 0 0 4px rgba(201,147,58,0.8)",
-            }} title={book.physical_location ? `Physical · ${book.physical_location}` : "Physical copy"} />
+            {isRead && (
+              <div title="Read"
+                style={{width:"17px",height:"17px",borderRadius:"50%",background:"var(--gold)",
+                        display:"flex",alignItems:"center",justifyContent:"center",
+                        boxShadow:"0 0 0 1px rgba(0,0,0,0.55)"}}>
+                <Check style={{width:"11px",height:"11px",color:"var(--ink)",strokeWidth:3.5}} />
+              </div>
+            )}
           </div>
         )}
 
