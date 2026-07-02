@@ -13,18 +13,19 @@ WORKDIR /app
 # early, cached layer so ordinary backend rebuilds stay fast. Headless: Qt runs
 # offscreen. (calibredb only runs during a deliberate, confirmed sync.)
 ENV DEBIAN_FRONTEND=noninteractive
-# The Debian calibre package drags in ~240 MB that calibredb never touches:
+# The Debian calibre package drags in ~220 MB that calibredb never touches:
 # scipy/sympy/numpy/mpmath (hard deps of python3-fonttools, used only for
-# variable-font math), docs, and calibre's UI localization. Stripped in the
-# same layer so the image never carries them (1.44 GB -> ~1.2 GB).
+# variable-font math) and docs. Stripped in the same layer so the image never
+# carries them. NOTE: /usr/share/calibre/localization must stay — calibredb
+# loads iso639.calibre_msgpack from it at startup (removing it broke Sync to
+# Calibre in v1.17.0 with FileNotFoundError).
 RUN apt-get update && apt-get install -y --no-install-recommends calibre \
     && rm -rf /var/lib/apt/lists/* \
     && rm -rf /usr/lib/python3/dist-packages/scipy \
               /usr/lib/python3/dist-packages/sympy \
               /usr/lib/python3/dist-packages/numpy* \
               /usr/lib/python3/dist-packages/mpmath \
-              /usr/share/doc \
-              /usr/share/calibre/localization
+              /usr/share/doc
 # gosu lets the entrypoint fix bind-mount ownership as root, then drop to `bridge`.
 RUN apt-get update && apt-get install -y --no-install-recommends gosu \
     && rm -rf /var/lib/apt/lists/*
