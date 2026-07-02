@@ -23,6 +23,88 @@ def get_database_url() -> str:
     )
 
 
+# ── Connection pool ───────────────────────────────────────────────────────────
+# Every request used to open (and tear down) several fresh psycopg2 connections —
+# auth, access checks, overlay merges, ratings, read status each made their own.
+# One shared pool removes that fixed cost. The wrapper below lets the ~119
+# existing `conn = _pg(); …; conn.close()` call sites work unchanged: close()
+# rolls back any open transaction and returns the connection to the pool.
+
+_pool = None
+_pool_lock = None
+
+
+class _PooledConn:
+    """Delegates everything to the real connection; close() returns it to the
+    pool exactly once (double-close safe)."""
+    __slots__ = ("_conn", "_returned")
+
+    def __init__(self, conn):
+        object.__setattr__(self, "_conn", conn)
+        object.__setattr__(self, "_returned", False)
+
+    def close(self):
+        if self._returned:
+            return
+        object.__setattr__(self, "_returned", True)
+        conn = self._conn
+        try:
+            conn.rollback()  # never return a connection mid-transaction
+        except Exception:
+            try:
+                _pool.putconn(conn, close=True)
+                return
+            except Exception:
+                return
+        try:
+            _pool.putconn(conn)
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def __del__(self):  # safety net if a caller forgets close()
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
+def get_pg():
+    """Pooled PostgreSQL connection (RealDictCursor). Falls back to a plain
+    direct connection if the pool is exhausted or unavailable, so bursts (e.g.
+    a page of cover requests) degrade gracefully instead of erroring."""
+    global _pool, _pool_lock
+    import threading
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+
+    if _pool_lock is None:
+        _pool_lock = threading.Lock()
+    if _pool is None:
+        with _pool_lock:
+            if _pool is None:
+                from psycopg2 import pool as _pgpool
+                maxconn = int(os.getenv("PG_POOL_MAX", "15"))
+                _pool = _pgpool.ThreadedConnectionPool(
+                    1, maxconn, get_database_url(), cursor_factory=RealDictCursor
+                )
+                logger.info("PostgreSQL connection pool ready (max=%d)", maxconn)
+    try:
+        conn = _pool.getconn()
+        if conn.closed:  # server restarted / stale — discard and take a fresh one
+            _pool.putconn(conn, close=True)
+            conn = _pool.getconn()
+        return _PooledConn(conn)
+    except Exception:
+        # Pool exhausted or broken: plain connection whose close() really closes.
+        return psycopg2.connect(get_database_url(), cursor_factory=RealDictCursor)
+
+
 def init_postgres():
     """Create tables if they don't exist."""
     try:
@@ -271,6 +353,9 @@ def init_postgres():
                 created_at  TIMESTAMPTZ DEFAULT NOW()
             );
             CREATE INDEX IF NOT EXISTS idx_read_log_book ON read_log(book_id, book_source, user_id);
+            -- Reading goals / year-in-review filter by user + year prefix; the
+            -- book-first index above can't serve that, so it was a seq scan.
+            CREATE INDEX IF NOT EXISTS idx_read_log_user_date ON read_log(user_id, date_read);
 
             -- Per-user annual reading goal ("read N books this year").
             CREATE TABLE IF NOT EXISTS reading_goals (
@@ -364,6 +449,15 @@ def init_postgres():
         except Exception as _e:
             logger.warning("Could not set statement_timeout: %s", _e)
 
+        # Housekeeping: expired sessions were only removed on explicit logout, so
+        # the table grew without bound. Purge at every startup.
+        try:
+            cur.execute("DELETE FROM sessions WHERE expires_at < NOW()")
+            if cur.rowcount:
+                logger.info("Purged %d expired session(s)", cur.rowcount)
+        except Exception as _e:
+            logger.warning("Session purge skipped: %s", _e)
+
         conn.commit()
         cur.close()
         conn.close()
@@ -374,10 +468,8 @@ def init_postgres():
 
 
 def get_pg_conn():
-    """Get a PostgreSQL connection."""
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-    conn = psycopg2.connect(get_database_url(), cursor_factory=RealDictCursor)
+    """Get a PostgreSQL connection (pooled)."""
+    conn = get_pg()
     try:
         yield conn
     finally:

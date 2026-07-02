@@ -61,13 +61,24 @@ export function InfiniteBooks({ initialItems, initialTotal, pageSize, fetchParam
     setScrollParent((anchorRef.current?.closest("main") as HTMLElement) ?? null);
   }, []);
 
+  // Latest state mirrored in a ref so loadMore (and thus Virtuoso's context and
+  // the Footer's IntersectionObserver) stays referentially stable — it used to be
+  // recreated on every page/loading flip, re-rendering all mounted cards and
+  // re-subscribing the observer each time.
+  const stateRef = useRef({ loading, hasMore, page, count: items.length, fetchParams, pageSize });
+  useEffect(() => {
+    stateRef.current = { loading, hasMore, page, count: items.length, fetchParams, pageSize };
+  });
+
   const loadMore = useCallback(async () => {
-    if (loading || !hasMore) return;
+    const s = stateRef.current;
+    if (s.loading || !s.hasMore) return;
     setLoading(true);
+    stateRef.current.loading = true;
     try {
-      const nextPage = page + 1;
+      const nextPage = s.page + 1;
       const qs = new URLSearchParams(
-        Object.entries({ ...fetchParams, page: nextPage, page_size: pageSize })
+        Object.entries({ ...s.fetchParams, page: nextPage, page_size: s.pageSize })
           .filter(([, v]) => v !== undefined)
           .map(([k, v]) => [k, String(v)])
       ).toString();
@@ -79,13 +90,15 @@ export function InfiniteBooks({ initialItems, initialTotal, pageSize, fetchParam
         return [...prev, ...fresh];
       });
       setPage(nextPage);
-      setHasMore(items.length + data.items.length < data.total);
+      setHasMore(s.count + data.items.length < data.total);
     } catch (e) {
       console.error("Failed to load more books", e);
     } finally {
       setLoading(false);
     }
-  }, [loading, hasMore, page, fetchParams, pageSize, items.length]);
+  }, []);
+
+  const renderItem = useCallback((_index: number, book: BookSummary) => <BookCard book={book} />, []);
 
   // Reset when the filter/search changes.
   useEffect(() => {
@@ -104,7 +117,7 @@ export function InfiniteBooks({ initialItems, initialTotal, pageSize, fetchParam
           overscan={800}
           context={{ loading, hasMore, count: items.length, onVisible: loadMore }}
           listClassName={`grid ${COLS_CLASS[cols] ?? "grid-cols-3"} gap-2.5 md:gap-7`}
-          itemContent={(_index, book) => <BookCard book={book} />}
+          itemContent={renderItem}
           components={{ Footer }}
         />
       ) : (

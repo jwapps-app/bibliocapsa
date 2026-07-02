@@ -9,10 +9,8 @@ original/first date (see calibre_read._writeback, which never overwrites it).
 
 
 def _pg():
-    from .pg_database import get_database_url
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-    return psycopg2.connect(get_database_url(), cursor_factory=RealDictCursor)
+    from .pg_database import get_pg
+    return get_pg()
 
 
 def list_for(book_id: int, book_source: str, user_id: int) -> list:

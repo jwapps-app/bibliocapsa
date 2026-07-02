@@ -7,7 +7,7 @@
 //
 // Bump CACHE when the caching logic changes; the activate handler purges any
 // cache whose name doesn't match, so old shells don't linger.
-const CACHE = "bibliocapsa-shell-v1";
+const CACHE = "bibliocapsa-shell-v2";
 
 // Paths owned by the backend — auth state, live data, large downloads. Never
 // touched by the SW: no caching, no interception.
@@ -58,8 +58,13 @@ self.addEventListener("fetch", (event) => {
     event.respondWith(
       fetch(request)
         .then((res) => {
-          const copy = res.clone();
-          caches.open(CACHE).then((c) => c.put("/", copy)).catch(() => {});
+          // Only the home page is the offline shell. (Caching every navigation
+          // as "/" persisted whatever page — including authenticated, user-
+          // specific HTML — was visited last, and wrote to disk per click.)
+          if (url.pathname === "/" && res.ok) {
+            const copy = res.clone();
+            caches.open(CACHE).then((c) => c.put("/", copy)).catch(() => {});
+          }
           return res;
         })
         .catch(() =>
@@ -73,9 +78,28 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // Static build assets, icons, fonts, images: stale-while-revalidate.
+  // Next's build assets are content-hashed and immutable: cache-first, no
+  // background revalidation (stale-while-revalidate was re-fetching every cached
+  // JS/CSS file on every page view — pure waste on WAN/mobile).
+  if (url.pathname.startsWith("/_next/static")) {
+    event.respondWith(
+      caches.match(request).then((cached) =>
+        cached ||
+        fetch(request).then((res) => {
+          if (res && res.status === 200) {
+            const copy = res.clone();
+            caches.open(CACHE).then((c) => c.put(request, copy)).catch(() => {});
+          }
+          return res;
+        })
+      )
+    );
+    return;
+  }
+
+  // Icons, fonts, other static images: stale-while-revalidate (these CAN change
+  // without a filename change).
   const isStatic =
-    url.pathname.startsWith("/_next/static") ||
     url.pathname.startsWith("/icons/") ||
     /\.(?:js|css|png|jpg|jpeg|gif|svg|webp|ico|woff2?|ttf|mjs)$/.test(url.pathname);
   if (isStatic) {

@@ -16,10 +16,8 @@ def _user(request: Request) -> dict:
 
 
 def _pg():
-    from ..pg_database import get_database_url
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-    return psycopg2.connect(get_database_url(), cursor_factory=RealDictCursor)
+    from ..pg_database import get_pg
+    return get_pg()
 
 
 class WishItem(BaseModel):

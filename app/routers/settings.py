@@ -24,26 +24,39 @@ def auto_enrich_enabled() -> bool:
 
 
 def _pg():
-    from ..pg_database import get_database_url
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-    return psycopg2.connect(get_database_url(), cursor_factory=RealDictCursor)
+    from ..pg_database import get_pg
+    return get_pg()
+
+
+# Settings change only when an admin edits them, but hot paths (read-status
+# merge, reading-column filters) read the same keys several times per request —
+# each read used to be its own DB query. Short TTL cache; set_setting updates it
+# immediately so admin edits apply without waiting out the TTL (single worker).
+_settings_cache: dict = {}
+_SETTINGS_TTL = 30.0
 
 
 def get_setting(key: str) -> Optional[str]:
     """Read a raw setting value. Returns None if unset or DB unavailable."""
+    import time
+    hit = _settings_cache.get(key)
+    if hit is not None and (time.monotonic() - hit[1]) < _SETTINGS_TTL:
+        return hit[0]
     try:
         conn = _pg()
         cur = conn.cursor()
         cur.execute("SELECT value FROM app_settings WHERE key = %s", (key,))
         row = cur.fetchone()
         conn.close()
-        return row["value"] if row else None
+        val = row["value"] if row else None
+        _settings_cache[key] = (val, time.monotonic())
+        return val
     except Exception:
         return None
 
 
 def set_setting(key: str, value: Optional[str]) -> None:
+    import time
     conn = _pg()
     cur = conn.cursor()
     cur.execute(
@@ -56,6 +69,7 @@ def set_setting(key: str, value: Optional[str]) -> None:
     )
     conn.commit()
     conn.close()
+    _settings_cache[key] = (value, time.monotonic())
 
 
 def _mask(token: Optional[str]) -> Optional[str]:

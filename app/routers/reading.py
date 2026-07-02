@@ -37,10 +37,8 @@ class ReadingProgress(BaseModel):
 
 
 def _pg():
-    from ..pg_database import get_database_url
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-    return psycopg2.connect(get_database_url(), cursor_factory=RealDictCursor)
+    from ..pg_database import get_pg
+    return get_pg()
 
 
 @router.get("/current", summary="Books the current user is reading (from KOReader sync)")
@@ -76,30 +74,45 @@ def current_reading(request: Request):
     # A finished book (marked Read) should leave Currently Reading on its own,
     # keeping its progress/stats — so exclude books that are now 'read'.
     finished = calibre_read.read_book_ids([r["book_id"] for r in rows])
-    out = []
-    seen = set()
-    with get_conn() as cal:
-        for r in rows:
-            bid = r["book_id"]
-            if bid in seen or bid in finished:
-                continue
-            b = cal.execute("SELECT id, title, has_cover FROM books WHERE id = ?", (bid,)).fetchone()
-            if not b:
-                continue
-            if not access.is_calibre_book_allowed(cal, bid, allowed):
-                continue
+
+    # One batched lookup (title/cover + genre predicate in SQL) instead of two
+    # queries per progress row — the progress table grows with reading history.
+    ids, seen = [], set()
+    for r in rows:
+        bid = r["book_id"]
+        if bid not in seen and bid not in finished:
             seen.add(bid)
-            has_cover = bool(b["has_cover"])
-            out.append({
-                "book_id": bid,
-                "book_source": "calibre",
-                "title": b["title"],
-                "has_cover": has_cover,
-                "cover_url": f"{base_url}/api/covers/{bid}" if has_cover else None,
-                "percentage": r["percentage"],
-                "device": r["device"],
-                "updated_at": r["updated_at"],
-            })
+            ids.append(bid)
+    meta = {}
+    with get_conn() as cal:
+        pred, cp = access.calibre_predicate(allowed, "b")
+        extra = f" AND {pred}" if pred else ""
+        for i in range(0, len(ids), 500):  # stay under SQLite's parameter cap
+            chunk = ids[i:i + 500]
+            ph = ",".join("?" * len(chunk))
+            for b in cal.execute(
+                f"SELECT b.id, b.title, b.has_cover FROM books b WHERE b.id IN ({ph}){extra}",
+                chunk + cp,
+            ).fetchall():
+                meta[b["id"]] = (b["title"], bool(b["has_cover"]))
+
+    out, emitted = [], set()
+    for r in rows:  # preserve most-recent-first order, one entry per book
+        bid = r["book_id"]
+        if bid in emitted or bid not in meta:
+            continue
+        emitted.add(bid)
+        title, has_cover = meta[bid]
+        out.append({
+            "book_id": bid,
+            "book_source": "calibre",
+            "title": title,
+            "has_cover": has_cover,
+            "cover_url": f"{base_url}/api/covers/{bid}" if has_cover else None,
+            "percentage": r["percentage"],
+            "device": r["device"],
+            "updated_at": r["updated_at"],
+        })
     return out
 
 

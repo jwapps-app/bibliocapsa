@@ -1,14 +1,22 @@
+import { memo } from "react";
 import type { BookSummary } from "@/lib/api";
 import { publicUrl } from "@/lib/api";
 import { Check } from "lucide-react";
 import clsx from "clsx";
+import Link from "next/link";
 
 interface Props {
   book: BookSummary;
   className?: string;
 }
 
-export function BookCard({ book, className }: Props) {
+/** Grid cells render at ~150–250 px; ask the backend for a 300 px thumbnail
+ *  (covers 2× DPR) instead of the full ~240 KB original. */
+function thumb(u: string): string {
+  return u + (u.includes("?") ? "&" : "?") + "w=300";
+}
+
+function BookCardImpl({ book, className }: Props) {
   const author = book.authors[0]?.name ?? "Unknown Author";
   const stars = book.rating ? Math.round(book.rating) : 0;
   const isNative = book.book_source === "native";
@@ -28,12 +36,12 @@ export function BookCard({ book, className }: Props) {
 
   return (
     <div className={clsx("group flex flex-col", className)}>
-      <a href={href} className="block">
+      <Link href={href} prefetch={false} className="block">
       <div className="relative aspect-[2/3] w-full overflow-hidden rounded cover-shadow group-hover:cover-shadow-hover transition-all duration-300 group-hover:-translate-y-1"
            style={{ background: "var(--ink-soft)", border: "3px solid var(--cover-border)" }}>
         {book.has_cover && book.cover_url ? (
           <img
-            src={publicUrl(book.cover_url) ?? ""}
+            src={thumb(publicUrl(book.cover_url) ?? "")}
             alt={book.title}
             className="w-full h-full object-cover group-hover:scale-[1.03] transition-transform duration-500"
             loading="lazy"
@@ -99,20 +107,20 @@ export function BookCard({ book, className }: Props) {
           </div>
         )}
       </div>
-      </a>
+      </Link>
 
       {/* Info — hidden on mobile (covers only); shown on desktop */}
       <div className="mt-2.5 px-0.5 hidden lg:block">
-        <a href={href} className="block leading-snug line-clamp-2 hover:text-[var(--gold-light)] transition-colors text-[0.70rem] lg:text-[0.8rem]"
+        <Link href={href} prefetch={false} className="block leading-snug line-clamp-2 hover:text-[var(--gold-light)] transition-colors text-[0.70rem] lg:text-[0.8rem]"
              style={{fontFamily:"var(--sans)",fontWeight:500,letterSpacing:"-0.01em",color:"var(--parchment)"}}
              title={book.title}>
           {book.title}
-        </a>
+        </Link>
         {authorHref ? (
-          <a href={authorHref} className="block truncate mt-1 hover:text-[var(--gold-light)] transition-colors"
+          <Link href={authorHref} prefetch={false} className="block truncate mt-1 hover:text-[var(--gold-light)] transition-colors"
              style={{fontFamily:"var(--sans)",fontSize:"0.72rem",fontWeight:400,color:"var(--parchment-dim)",opacity:0.85}}>
             {author}
-          </a>
+          </Link>
         ) : (
           <div className="truncate mt-1"
                style={{fontFamily:"var(--sans)",fontSize:"0.72rem",fontWeight:400,color:"var(--parchment-dim)",opacity:0.85}}>
@@ -142,3 +150,7 @@ export function BookCard({ book, className }: Props) {
     </div>
   );
 }
+
+// Memoized: inside the virtualized grid, every loadMore/state flip used to
+// re-render all ~100 mounted cards; book objects are stable across appends.
+export const BookCard = memo(BookCardImpl);

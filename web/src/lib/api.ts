@@ -70,6 +70,9 @@ export interface Loan {
   book_title?: string; cover_url?: string; has_cover: boolean;
 }
 
+// Shared cache for api.me() — see its comment.
+let _me: { p: Promise<CurrentUser | null>; ts: number } | null = null;
+
 async function get<T>(path: string): Promise<T> {
   const headers: Record<string, string> = {};
   // On the server (SSR), forward the caller's session cookie to the backend so
@@ -306,6 +309,7 @@ export const api = {
 
   // ── Auth (client-side; browser carries the cookie) ──
   login: async (username: string, password: string): Promise<CurrentUser> => {
+    _me = null;  // a different user may sign in
     const res = await fetch("/api/auth/login", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, password }),
@@ -320,7 +324,7 @@ export const api = {
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail ?? "Registration failed");
     return res.json();
   },
-  logout: async (): Promise<void> => { await fetch("/api/auth/logout", { method: "POST" }); },
+  logout: async (): Promise<void> => { _me = null; await fetch("/api/auth/logout", { method: "POST" }); },
   updateMe: async (body: { kindle_email?: string }): Promise<CurrentUser> => {
     const res = await fetch("/api/auth/me", {
       method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
@@ -338,9 +342,17 @@ export const api = {
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail ?? "Send failed");
     return res.json();
   },
-  me:     async (): Promise<CurrentUser | null> => {
-    const res = await fetch("/api/auth/me");
-    return res.ok ? res.json() : null;
+  // Deduped: many components (Sidebar, ThemePicker, per-book admin controls…)
+  // call me() on mount — 5+ identical requests per page view. Share one in-flight
+  // promise + a short-lived result so a page costs a single /api/auth/me.
+  me:     (): Promise<CurrentUser | null> => {
+    const now = Date.now();
+    if (_me && now - _me.ts < 30_000) return _me.p;
+    const p = fetch("/api/auth/me")
+      .then(res => (res.ok ? res.json() : null))
+      .catch(() => { _me = null; return null; });
+    _me = { p, ts: now };
+    return p;
   },
   loans: async (activeOnly = true): Promise<Loan[]> => {
     const res = await fetch(`/api/lending?active_only=${activeOnly}`);

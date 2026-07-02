@@ -5,6 +5,7 @@ import clsx from "clsx";
 import { api, type CurrentUser } from "@/lib/api";
 import { ThemePicker } from "@/components/ThemePicker";
 import { BookLogo } from "@/components/BookLogo";
+import Link from "next/link";
 
 interface ShelfItem { id: number; name: string; is_smart: boolean; book_count: number; }
 
@@ -87,7 +88,7 @@ export function Sidebar({ currentParams, bookCount }: SidebarProps) {
               !currentParams.series_id && !currentParams.author_id && !currentParams.tag_id;
           const count = countKey ? counts[countKey] : undefined;
           return (
-            <a key={href} href={href} onClick={onNavigate}
+            <Link key={href} href={href} onClick={onNavigate}
               className="flex items-center gap-3 px-3 py-2 rounded-sm transition-all"
               style={{
                 background: active ? "rgba(107,78,30,0.35)" : "transparent",
@@ -102,7 +103,7 @@ export function Sidebar({ currentParams, bookCount }: SidebarProps) {
                   {count.toLocaleString()}
                 </span>
               )}
-            </a>
+            </Link>
           );
         })}
 
@@ -121,7 +122,7 @@ export function Sidebar({ currentParams, bookCount }: SidebarProps) {
                 Smart Shelves
               </div>
               {smartShelves.map(shelf => (
-                <a key={shelf.id} href={`/?view=shelf&shelf=${shelf.id}`} onClick={onNavigate}
+                <Link key={shelf.id} href={`/?view=shelf&shelf=${shelf.id}`} onClick={onNavigate}
                   className="flex items-center justify-between gap-2 px-3 py-1.5 rounded-sm transition-all"
                   style={{
                     background: activeShelf === shelf.id ? "rgba(107,78,30,0.25)" : "transparent",
@@ -133,16 +134,16 @@ export function Sidebar({ currentParams, bookCount }: SidebarProps) {
                   <span style={{ fontFamily: "var(--mono)", fontSize: "0.65rem", color: "var(--parchment-dim)", opacity: 0.5 }}>
                     {shelf.book_count}
                   </span>
-                </a>
+                </Link>
               ))}
             </div>
           )}
 
-          <a href="/shelves/new" onClick={onNavigate}
+          <Link href="/shelves/new" onClick={onNavigate}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-sm transition-colors hover:bg-[rgba(107,78,30,0.2)]"
             style={{ fontFamily: "var(--mono)", fontSize: "0.68rem", color: "var(--gold-light)", opacity: 0.85 }}>
             <Sparkles className="w-3 h-3" /> New smart shelf…
-          </a>
+          </Link>
 
           <div>
             <div className="flex items-center justify-between px-3 mb-1">
@@ -184,7 +185,7 @@ export function Sidebar({ currentParams, bookCount }: SidebarProps) {
 
             {manualShelves.map(shelf => (
               <div key={shelf.id} className="flex items-center group/shelf">
-                <a href={`/?view=shelf&shelf=${shelf.id}`} onClick={onNavigate}
+                <Link href={`/?view=shelf&shelf=${shelf.id}`} onClick={onNavigate}
                   className="flex-1 flex items-center justify-between px-3 py-1.5 rounded-sm transition-all min-w-0"
                   style={{
                     background: activeShelf === shelf.id ? "rgba(107,78,30,0.25)" : "transparent",
@@ -198,7 +199,7 @@ export function Sidebar({ currentParams, bookCount }: SidebarProps) {
                       {shelf.book_count}
                     </span>
                   )}
-                </a>
+                </Link>
                 <button onClick={() => deleteShelf(shelf.id)}
                   className="opacity-0 group-hover/shelf:opacity-40 hover:!opacity-100 transition-opacity px-1.5 py-1.5 shrink-0"
                   style={{ color: "var(--parchment-dim)" }}
@@ -215,11 +216,11 @@ export function Sidebar({ currentParams, bookCount }: SidebarProps) {
       <div className="mt-auto border-t px-2 py-2" style={{ borderColor: "var(--ink-muted)" }}>
         {collapsed ? (
           <div className="flex flex-col items-center gap-1">
-            <a href="/settings" onClick={() => onNavigate?.()} title="Settings"
+            <Link href="/settings" onClick={() => onNavigate?.()} title="Settings"
               className="p-1.5 rounded-sm transition-colors hover:bg-[rgba(107,78,30,0.25)]"
               style={{ color: "var(--parchment-dim)" }}>
               <Settings className="w-4 h-4" />
-            </a>
+            </Link>
             <ThemePicker iconOnly collapsed />
             <button onClick={logout} title="Sign out"
               className="p-1.5 rounded-sm transition-colors hover:bg-[rgba(107,78,30,0.25)]"
@@ -239,11 +240,11 @@ export function Sidebar({ currentParams, bookCount }: SidebarProps) {
                 </div>
               )}
             </div>
-            <a href="/settings" onClick={() => onNavigate?.()} title="Settings"
+            <Link href="/settings" onClick={() => onNavigate?.()} title="Settings"
               className="shrink-0 p-1.5 rounded-sm transition-colors hover:bg-[rgba(107,78,30,0.25)]"
               style={{ color: "var(--parchment-dim)" }}>
               <Settings className="w-4 h-4" />
-            </a>
+            </Link>
             <ThemePicker iconOnly />
             <button onClick={logout} title="Sign out"
               className="shrink-0 p-1.5 rounded-sm transition-colors hover:bg-[rgba(107,78,30,0.25)]"

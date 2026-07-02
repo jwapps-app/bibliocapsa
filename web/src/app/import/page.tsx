@@ -19,24 +19,29 @@ export default function ImportPage() {
   const [autoEnrich, setAutoEnrich] = useState(true);
 
   // Poll the server for import progress (works whether the import was started
-  // here or is already running from a previous visit).
+  // here or is already running from a previous visit). Interval id lives in a
+  // ref so unmount can clear it (client-side navigation no longer tears the
+  // page down for us), and 1.5s is plenty for a progress bar.
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startPolling = () => {
-    const poll = setInterval(async () => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = setInterval(async () => {
       const s = await fetch("/api/goodreads/import/status").then(r => r.json());
       setProgress(s.progress ?? 0);
       setTotal(s.total ?? 0);
       if (s.status === "complete") {
-        clearInterval(poll);
+        if (pollRef.current) clearInterval(pollRef.current);
         setStatus("complete");
         setResult(s.result);
         fetch("/api/goodreads/import/summary").then(r => r.json()).then(setSummary);
       } else if (s.status === "error") {
-        clearInterval(poll);
+        if (pollRef.current) clearInterval(pollRef.current);
         setStatus("error");
         setError(s.error ?? "Unknown error");
       }
-    }, 500);
+    }, 1500);
   };
+  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
 
   useEffect(() => {
     fetch("/api/goodreads/import/summary").then(r => r.json()).then(setSummary).catch(() => {});

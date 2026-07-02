@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { VirtuosoGrid } from "react-virtuoso";
 import { Check } from "lucide-react";
 import { COLS_CLASS } from "@/lib/grid";
+import Link from "next/link";
 
 /** Virtualized grid for a shelf's books (can be large, e.g. "Highly Rated").
  *  Only on-screen cards are rendered; windows into the existing <main> scroller. */
@@ -38,11 +39,12 @@ export function ShelfGrid({ books, cols }: { books: any[]; cols: number }) {
 
 function ShelfCard({ book }: { book: any }) {
   return (
-    <a href={book.book_source === "native" ? `/books/${book.book_id}?source=native` : `/books/${book.book_id}`}
+    <Link prefetch={false} href={book.book_source === "native" ? `/books/${book.book_id}?source=native` : `/books/${book.book_id}`}
       className="group flex flex-col">
       <div className="relative aspect-[2/3] w-full overflow-hidden rounded-sm cover-shadow group-hover:cover-shadow-hover transition-all duration-300 group-hover:-translate-y-1">
         {book.has_cover && book.cover_url ? (
-          <img src={book.cover_url.replace(/^https?:\/\/[^/]+/, "")} alt={book.title}
+          <img src={(() => { const u = book.cover_url.replace(/^https?:\/\/[^/]+/, ""); return u + (u.includes("?") ? "&" : "?") + "w=300"; })()}
+            alt={book.title}
             className="w-full h-full object-cover" loading="lazy" />
         ) : (
           <div className="no-cover w-full h-full flex items-center justify-center p-3">
@@ -96,6 +98,6 @@ function ShelfCard({ book }: { book: any }) {
           </div>
         )}
       </div>
-    </a>
+    </Link>
   );
 }

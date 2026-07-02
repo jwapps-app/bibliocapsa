@@ -165,7 +165,8 @@ def row_to_detail(conn: sqlite3.Connection, row: sqlite3.Row, base_url: str) -> 
         from .pg_database import get_database_url
         import psycopg2
         from psycopg2.extras import RealDictCursor
-        pg = psycopg2.connect(get_database_url(), cursor_factory=RealDictCursor)
+        from .pg_database import get_pg
+        pg = get_pg()
         cur = pg.cursor()
         cur.execute(
             "SELECT has_digital, has_physical, physical_location FROM book_ownership WHERE book_id=%s AND book_source='calibre'",

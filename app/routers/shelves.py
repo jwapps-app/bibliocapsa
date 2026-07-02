@@ -54,14 +54,20 @@ class ShelfBook(BaseModel):
 
 
 def _pg():
-    from ..pg_database import get_database_url
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-    return psycopg2.connect(get_database_url(), cursor_factory=RealDictCursor)
+    from ..pg_database import get_pg
+    return get_pg()
+
+
+_tables_ensured = False
 
 
 def _ensure_tables():
-    """Create shelf tables if missing (supplement to pg_database init)."""
+    """Create shelf tables if missing (supplement to pg_database init). Runs its
+    DDL once per process — it used to run on every shelves request, which cost
+    ~10 round trips and took brief ACCESS EXCLUSIVE locks per sidebar render."""
+    global _tables_ensured
+    if _tables_ensured:
+        return
     try:
         conn = _pg()
         cur = conn.cursor()
@@ -123,6 +129,7 @@ def _ensure_tables():
         conn.commit()
         cur.close()
         conn.close()
+        _tables_ensured = True  # only on success, so a transient DB outage retries
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning(f"Shelf table init: {e}")
@@ -227,35 +234,47 @@ def _resolve_smart_shelf(rules: dict, base_url: str, username: str = None, allow
             return []
         # Finished books (marked Read) drop out of Currently Reading on their own.
         finished = calibre_read.read_book_ids([p["book_id"] for p in prog])
+        # Batched metadata fetch (genre predicate applied in SQL) instead of two
+        # queries per progress row.
+        ids, seen = [], set()
+        for p in prog:
+            bid = p["book_id"]
+            if bid not in seen and bid not in finished:
+                seen.add(bid)
+                ids.append(bid)
+        meta = {}
         with get_conn() as conn:
-            seen = set()
-            for p in prog:
-                bid = p["book_id"]
-                if bid in seen or bid in finished:
-                    continue
-                if not access.is_calibre_book_allowed(conn, bid, allowed):
-                    continue
-                row = conn.execute(
-                    """SELECT b.id, b.title, b.has_cover, b.series_index,
+            pred, cp = access.calibre_predicate(allowed, "b")
+            extra = f" AND {pred}" if pred else ""
+            for i in range(0, len(ids), 500):
+                chunk = ids[i:i + 500]
+                ph = ",".join("?" * len(chunk))
+                for row in conn.execute(
+                    f"""SELECT b.id, b.title, b.has_cover, b.series_index,
                               (SELECT GROUP_CONCAT(a.name, ', ') FROM authors a
                                JOIN books_authors_link bal ON bal.author=a.id WHERE bal.book=b.id) as authors,
                               (SELECT s.name FROM series s JOIN books_series_link bsl ON bsl.series=s.id
                                WHERE bsl.book=b.id LIMIT 1) as series_name
-                       FROM books b WHERE b.id = ?""",
-                    (bid,),
-                ).fetchone()
-                if not row:
-                    continue
-                seen.add(bid)
-                has_cover = bool(row["has_cover"])
-                books.append(ShelfBook(
-                    book_id=row["id"], book_source="calibre", title=row["title"],
-                    authors=[row["authors"]] if row["authors"] else [],
-                    has_cover=has_cover,
-                    cover_url=f"{base_url}/api/covers/{row['id']}" if has_cover else None,
-                    series_name=row["series_name"], series_index=row["series_index"],
-                    percentage=p["percentage"],
-                ))
+                       FROM books b WHERE b.id IN ({ph}){extra}""",
+                    chunk + cp,
+                ).fetchall():
+                    meta[row["id"]] = row
+        emitted = set()
+        for p in prog:  # keep most-recently-read-first order
+            bid = p["book_id"]
+            row = meta.get(bid)
+            if not row or bid in emitted:
+                continue
+            emitted.add(bid)
+            has_cover = bool(row["has_cover"])
+            books.append(ShelfBook(
+                book_id=row["id"], book_source="calibre", title=row["title"],
+                authors=[row["authors"]] if row["authors"] else [],
+                has_cover=has_cover,
+                cover_url=f"{base_url}/api/covers/{row['id']}" if has_cover else None,
+                series_name=row["series_name"], series_index=row["series_index"],
+                percentage=p["percentage"],
+            ))
         # Physical books manually marked "currently reading" (not for genre-
         # restricted users — native books aren't Calibre-genre-tagged).
         if rules.get("status", "reading") == "reading" and allowed is None:
@@ -451,6 +470,92 @@ def _can_edit_shelf(cur, shelf_id: int, user) -> bool:
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
+def _count_smart_shelf(rules: dict, username: str = None, allowed=None) -> int:
+    """Count a smart shelf's books WITHOUT materializing them. The sidebar shows
+    every shelf's count on every page, and fully resolving (e.g.) Highly Rated
+    built thousands of Pydantic models per render just to take len() of them."""
+    from ..database import get_conn
+    from .. import access
+    shelf_type = rules.get("type")
+
+    # Currently Reading: bounded by books actually in progress (a handful) and
+    # needs the finished-book exclusion — resolving is the correct, cheap path.
+    if shelf_type == "reading_status":
+        return len(_resolve_smart_shelf(rules, "", username=username, allowed=allowed))
+
+    with get_conn() as conn:
+        cal_pred, cp = access.calibre_predicate(allowed, "b")
+
+        if shelf_type == "most_recent":
+            limit = rules.get("limit", 50)
+            where = f"WHERE {cal_pred}" if cal_pred else ""
+            # capped count: we only need min(limit, matching)
+            cal_n = conn.execute(
+                f"SELECT COUNT(*) FROM (SELECT 1 FROM books b {where} LIMIT ?)",
+                cp + [limit],
+            ).fetchone()[0]
+            nat_n = 0
+            if allowed is None:  # native books hidden from genre-restricted users
+                try:
+                    pg = _pg(); ncur = pg.cursor()
+                    ncur.execute("SELECT COUNT(*) AS c FROM native_books")
+                    nat_n = min(limit, ncur.fetchone()["c"])
+                    pg.close()
+                except Exception:
+                    pass
+            return min(limit, cal_n + nat_n)
+
+        if shelf_type == "recently_added":
+            days = rules.get("days", 30)
+            extra = f" AND {cal_pred}" if cal_pred else ""
+            return conn.execute(
+                f"SELECT COUNT(*) FROM (SELECT 1 FROM books b "
+                f"WHERE substr(b.timestamp, 1, 19) >= strftime('%Y-%m-%d %H:%M:%S', 'now', ?){extra} "
+                f"LIMIT 50)",
+                [f"-{days} days"] + cp,
+            ).fetchone()[0]
+
+        if shelf_type == "min_rating":
+            raw = rules.get("rating", 4)
+            threshold = raw / 2 if raw > 5 else raw
+            eff = {}
+            for r in conn.execute(
+                "SELECT brl.book AS id, r.rating AS rating FROM books_ratings_link brl "
+                "JOIN ratings r ON r.id = brl.rating"
+            ).fetchall():
+                eff[r["id"]] = (r["rating"] or 0) / 2.0
+            try:
+                pg = _pg(); pc = pg.cursor()
+                pc.execute("SELECT book_id, value FROM calibre_edits WHERE field = 'rating'")
+                for r in pc.fetchall():
+                    try:
+                        eff[r["book_id"]] = float(r["value"])
+                    except (TypeError, ValueError):
+                        pass
+                pg.close()
+            except Exception:
+                pass
+            qualifying = [bid for bid, rt in eff.items() if rt is not None and rt >= threshold]
+            if not qualifying or allowed is None:
+                return len(qualifying)
+            ph = ",".join("?" * len(qualifying))
+            return conn.execute(
+                f"SELECT COUNT(*) FROM books b WHERE b.id IN ({ph}) AND {cal_pred}",
+                qualifying + cp,
+            ).fetchone()[0]
+
+        if shelf_type == "query":
+            where_sql, qparams = _build_query_where(conn, rules)
+            if cal_pred:
+                where_sql = f"{where_sql} AND {cal_pred}"
+                qparams = qparams + cp
+            return conn.execute(
+                f"SELECT COUNT(*) FROM books b WHERE {where_sql}", qparams
+            ).fetchone()[0]
+
+    return 0
+
+
 @router.get("", response_model=list[Shelf], summary="List the caller's shelves + shared shelves")
 def list_shelves(request: Request):
     from .. import access
@@ -479,11 +584,12 @@ def list_shelves(request: Request):
         result = []
         for r in rows:
             count = r["book_count"]
-            # Smart shelves have no stored membership — resolve to count them.
+            # Smart shelves have no stored membership — COUNT them (never resolve
+            # full book lists just for a sidebar badge).
             if r["is_smart"] and r["smart_rules"]:
                 try:
-                    count = len(_resolve_smart_shelf(dict(r["smart_rules"]), "",
-                                                     username=username, allowed=allowed))
+                    count = _count_smart_shelf(dict(r["smart_rules"]),
+                                               username=username, allowed=allowed)
                 except Exception:
                     count = 0
             result.append(Shelf(
@@ -658,52 +764,70 @@ def get_shelf_books(shelf_id: int, request: Request):
             except Exception:
                 pass
 
-        with get_conn() as cal_conn:
-            for entry in entries:
-                if entry["book_source"] == "calibre":
-                    if allowed is not None and not access.is_calibre_book_allowed(cal_conn, entry["book_id"], allowed):
-                        continue
-                    row = cal_conn.execute(
-                        """SELECT b.id, b.title, b.has_cover, b.series_index,
+        # Batch both sources up front (the loop used to run one Calibre query per
+        # entry and open a fresh PG connection per native entry).
+        cal_meta = {}
+        if calibre_ids:
+            with get_conn() as cal_conn:
+                pred, cp = access.calibre_predicate(allowed, "b")
+                extra = f" AND {pred}" if pred else ""
+                for i in range(0, len(calibre_ids), 500):
+                    chunk = calibre_ids[i:i + 500]
+                    ph = ",".join("?" * len(chunk))
+                    for row in cal_conn.execute(
+                        f"""SELECT b.id, b.title, b.has_cover, b.series_index,
                                   (SELECT GROUP_CONCAT(a.name, ', ') FROM authors a
                                    JOIN books_authors_link bal ON bal.author=a.id WHERE bal.book=b.id) as authors,
                                   (SELECT s.name FROM series s JOIN books_series_link bsl ON bsl.series=s.id
                                    WHERE bsl.book=b.id LIMIT 1) as series_name
-                           FROM books b WHERE b.id = ?""",
-                        (entry["book_id"],)
-                    ).fetchone()
-                    if row:
-                        has_cover = bool(row["has_cover"])
-                        own = ownership_map.get(row["id"], {})
-                        books.append(ShelfBook(
-                            book_id=row["id"], book_source="calibre",
-                            title=row["title"],
-                            authors=[row["authors"]] if row["authors"] else [],
-                            has_cover=has_cover,
-                            cover_url=f"{base_url}/api/covers/{row['id']}" if has_cover else None,
-                            series_name=row["series_name"],
-                            series_index=row["series_index"],
-                            added_at=entry["added_at"],
-                            has_physical=own.get("has_physical", False),
-                            has_digital=True,
-                            location=own.get("physical_location"),
-                        ))
-                elif entry["book_source"] == "native":
-                    pg2 = _pg()
-                    cur2 = pg2.cursor()
-                    cur2.execute("SELECT * FROM native_books WHERE id = %s", (entry["book_id"],))
-                    nb = cur2.fetchone()
-                    pg2.close()
-                    if nb and (allowed is None or access.is_native_allowed(nb.get("categories"), allowed)):
-                        books.append(ShelfBook(
-                            book_id=nb["id"], book_source="native",
-                            title=nb["title"],
-                            authors=[nb["author"]] if nb["author"] else [],
-                            has_cover=bool(nb.get("cover_url")),
-                            cover_url=nb.get("cover_url"),
-                            added_at=entry["added_at"],
-                            location=nb.get("location"),
-                        ))
+                           FROM books b WHERE b.id IN ({ph}){extra}""",
+                        chunk + cp,
+                    ).fetchall():
+                        cal_meta[row["id"]] = row
+        native_ids = [e["book_id"] for e in entries if e["book_source"] == "native"]
+        native_meta = {}
+        if native_ids:
+            try:
+                pg2 = _pg()
+                cur2 = pg2.cursor()
+                cur2.execute("SELECT * FROM native_books WHERE id = ANY(%s)", (native_ids,))
+                for nb in cur2.fetchall():
+                    native_meta[nb["id"]] = nb
+                pg2.close()
+            except Exception:
+                pass
+
+        for entry in entries:
+            if entry["book_source"] == "calibre":
+                row = cal_meta.get(entry["book_id"])
+                if row:
+                    has_cover = bool(row["has_cover"])
+                    own = ownership_map.get(row["id"], {})
+                    books.append(ShelfBook(
+                        book_id=row["id"], book_source="calibre",
+                        title=row["title"],
+                        authors=[row["authors"]] if row["authors"] else [],
+                        has_cover=has_cover,
+                        cover_url=f"{base_url}/api/covers/{row['id']}" if has_cover else None,
+                        series_name=row["series_name"],
+                        series_index=row["series_index"],
+                        added_at=entry["added_at"],
+                        has_physical=own.get("has_physical", False),
+                        has_digital=True,
+                        location=own.get("physical_location"),
+                    ))
+            elif entry["book_source"] == "native":
+                nb = native_meta.get(entry["book_id"])
+                if nb and (allowed is None or access.is_native_allowed(nb.get("categories"), allowed)):
+                    books.append(ShelfBook(
+                        book_id=nb["id"], book_source="native",
+                        title=nb["title"],
+                        authors=[nb["author"]] if nb["author"] else [],
+                        has_cover=bool(nb.get("cover_url")),
+                        cover_url=nb.get("cover_url"),
+                        added_at=entry["added_at"],
+                        location=nb.get("location"),
+                    ))
         return _annotate_read_status(books)
     except HTTPException:
         raise

@@ -32,7 +32,8 @@ SESSION_COOKIE = "bibliocapsa_session"
 
 
 def _pg():
-    return psycopg2.connect(get_database_url(), cursor_factory=RealDictCursor)
+    from .pg_database import get_pg
+    return get_pg()
 
 
 # ── Password hashing ──────────────────────────────────────────────────────────
@@ -47,9 +48,25 @@ def hash_password(plaintext: str) -> str:
     )
 
 
+# Devices using HTTP Basic (OPDS readers) resend credentials on EVERY request,
+# and each verification costs 200k PBKDF2 iterations (~100ms of CPU — that's the
+# point of a KDF). Cache successful verifications in-memory, keyed by a SHA-256
+# of (plaintext + stored hash): a password change alters `stored`, so the key
+# rotates naturally; failures are never cached (each wrong guess still pays the
+# full KDF, preserving brute-force cost). In-process only, bounded, short TTL.
+_verify_cache: dict = {}
+_VERIFY_TTL = 600.0
+_VERIFY_MAX = 200
+
+
 def verify_password(plaintext: str, stored: Optional[str]) -> bool:
     if not stored:
         return False
+    import time
+    key = hashlib.sha256((plaintext + "\x00" + stored).encode()).hexdigest()
+    hit = _verify_cache.get(key)
+    if hit is not None and (time.monotonic() - hit) < _VERIFY_TTL:
+        return True
     try:
         algo, iters, salt_b64, hash_b64 = stored.split("$")
         if algo != "pbkdf2_sha256":
@@ -57,7 +74,12 @@ def verify_password(plaintext: str, stored: Optional[str]) -> bool:
         salt = base64.b64decode(salt_b64)
         expected = base64.b64decode(hash_b64)
         dk = hashlib.pbkdf2_hmac("sha256", plaintext.encode(), salt, int(iters))
-        return hmac.compare_digest(dk, expected)
+        ok = hmac.compare_digest(dk, expected)
+        if ok:
+            if len(_verify_cache) >= _VERIFY_MAX:
+                _verify_cache.clear()
+            _verify_cache[key] = time.monotonic()
+        return ok
     except Exception:
         return False
 
@@ -150,7 +172,14 @@ def _user_by_credentials(username: str, password: str) -> Optional[dict]:
 def authenticate_request(request) -> Optional[dict]:
     """Resolve the current user from (in order) the session cookie, an
     Authorization: Bearer <session-token>, or HTTP Basic credentials.
-    Returns a user dict (id, name, username, email, role) or None."""
+    Returns a user dict (id, name, username, email, role) or None.
+
+    The auth middleware already resolved the user once and stashed it on
+    request.state — reuse it so per-route admin checks don't re-run the whole
+    session/credential lookup (a second DB round trip per request)."""
+    cached = getattr(getattr(request, "state", None), "user", None)
+    if cached:
+        return cached
     token = request.cookies.get(SESSION_COOKIE)
     if token:
         user = _user_from_session(token)

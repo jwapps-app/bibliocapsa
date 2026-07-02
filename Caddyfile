@@ -4,6 +4,11 @@
 # also forwards WebDAV methods (PROPFIND/MKCOL/PUT) correctly, which the Next.js
 # rewrite layer does not.
 :80 {
+	# Compress API JSON and OPDS XML — the FastAPI backend sends them uncompressed,
+	# and large library listings/catalogs shrink 5-10x. Caddy skips already-
+	# compressed content (EPUBs, images) by content type automatically.
+	encode zstd gzip
+
 	# Baseline security headers (TLS/HSTS is owned by the upstream — Cloudflare or
 	# your own reverse proxy — since this listens on plain :80 behind it).
 	header {

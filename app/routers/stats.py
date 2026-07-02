@@ -261,15 +261,29 @@ def stats_summary(request: Request, days: int = 0):
 
     out = []
     with get_conn() as cal:
+        # Batch the title→id fallback and the has_cover lookups (this used to be
+        # two queries per book ever read).
+        titles = [b["title"] for b in books if b.get("title") and not by_md5.get(b.get("md5"))]
+        by_title = {}
+        for i in range(0, len(titles), 400):
+            chunk = titles[i:i + 400]
+            ph = ",".join("?" * len(chunk))
+            for r in cal.execute(
+                f"SELECT id, title FROM books WHERE title IN ({ph}) COLLATE NOCASE", chunk
+            ).fetchall():
+                by_title.setdefault(r["title"].lower(), r["id"])
+        all_ids = list({*by_md5.values(), *by_title.values()})
+        covers = {}
+        for i in range(0, len(all_ids), 500):
+            chunk = all_ids[i:i + 500]
+            ph = ",".join("?" * len(chunk))
+            for r in cal.execute(f"SELECT id, has_cover FROM books WHERE id IN ({ph})", chunk).fetchall():
+                covers[r["id"]] = bool(r["has_cover"])
         for b in books:
             cal_id = by_md5.get(b.get("md5"))
             if not cal_id and b.get("title"):
-                row = cal.execute("SELECT id FROM books WHERE title = ? COLLATE NOCASE LIMIT 1", (b["title"],)).fetchone()
-                cal_id = row["id"] if row else None
-            has_cover = False
-            if cal_id:
-                r = cal.execute("SELECT has_cover FROM books WHERE id = ?", (cal_id,)).fetchone()
-                has_cover = bool(r["has_cover"]) if r else False
+                cal_id = by_title.get(b["title"].lower())
+            has_cover = covers.get(cal_id, False) if cal_id else False
             out.append({
                 "title": b["title"], "authors": (b.get("authors") or "").replace("\n", ", "),
                 "seconds": b["secs"] or 0, "pages_read": b["pages_read"] or 0,

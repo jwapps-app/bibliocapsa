@@ -77,10 +77,8 @@ def _parse_gr_date(s: Optional[str]):
 
 
 def _pg():
-    from ..pg_database import get_database_url
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-    return psycopg2.connect(get_database_url(), cursor_factory=RealDictCursor)
+    from ..pg_database import get_pg
+    return get_pg()
 
 
 def _ensure_goodreads_tables(conn):

@@ -507,6 +507,7 @@ function EpubReader({ bookId }: { bookId: number }) {
   useEffect(() => {
     let cancelled = false;
     let rendition: any;
+    let docKeyHandler: ((e: KeyboardEvent) => void) | null = null;
 
     async function snapToHeading(cfi: string) {
       try {
@@ -671,6 +672,7 @@ function EpubReader({ bookId }: { bookId: number }) {
           if (e.key === "ArrowLeft") { userInteractedRef.current = true; rendition.prev(); }
         };
         rendition.on("keyup", onKey);
+        docKeyHandler = onKey;
         document.addEventListener("keyup", onKey);
 
         setLoading(false);
@@ -698,6 +700,9 @@ function EpubReader({ bookId }: { bookId: number }) {
       cancelled = true;
       readyRef.current = false;
       if (saveTimer.current) clearTimeout(saveTimer.current);
+      // The document-level listener leaked across unmounts (it held the whole
+      // rendition closure alive).
+      if (docKeyHandler) document.removeEventListener("keyup", docKeyHandler);
       try { rendition?.destroy(); } catch {}
     };
     // Re-create the rendition only on book change; flow change handled separately.

@@ -158,10 +158,8 @@ def _base_url(request: Request) -> str:
 
 
 def _pg():
-    from ..pg_database import get_database_url
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-    return psycopg2.connect(get_database_url(), cursor_factory=RealDictCursor)
+    from ..pg_database import get_pg
+    return get_pg()
 
 
 def _native_to_summary(nb: dict, base_url: str) -> BookSummary:
@@ -545,7 +543,8 @@ def list_books(
                 from ..pg_database import get_database_url
                 import psycopg2
                 from psycopg2.extras import RealDictCursor
-                pg = psycopg2.connect(get_database_url(), cursor_factory=RealDictCursor)
+                from ..pg_database import get_pg
+                pg = get_pg()
                 cur = pg.cursor()
                 cur.execute(
                     "SELECT book_id, has_digital, has_physical, physical_location FROM book_ownership WHERE book_id = ANY(%s) AND book_source='calibre'",

@@ -11,6 +11,7 @@ import { SyncButton } from "@/components/SyncButton";
 import { LendingView } from "@/components/LendingView";
 import { colsClass } from "@/lib/grid";
 import { Search, Layers, Type, User, CalendarPlus, CalendarCheck, Calendar, ArrowUpDown, ArrowUp, ArrowDown, Combine } from "lucide-react";
+import Link from "next/link";
 
 /** Icon for each sort key (custom date columns fall back to a calendar). */
 function SortIcon({ k, className }: { k: string; className?: string }) {
@@ -40,7 +41,7 @@ function SortRow({ searchParams, activeSort, activeDir, sortOptions }: {
         const dateSort = o.key === "added" || o.key === "date_read" || o.key.startsWith("custom:");
         const nextDir = active ? (activeDir === "asc" ? "desc" : "asc") : (dateSort ? "desc" : "asc");
         return (
-          <a key={o.key}
+          <Link key={o.key}
             href={`/?${new URLSearchParams({ ...rest, sort_by: o.key, sort_dir: nextDir })}`}
             title={`Sort by ${o.label}${active ? (activeDir === "desc" ? " (newest/Z first)" : " (oldest/A first)") : ""}`}
             aria-label={`Sort by ${o.label}`}
@@ -48,7 +49,7 @@ function SortRow({ searchParams, activeSort, activeDir, sortOptions }: {
             style={{ color: active ? "var(--gold-light)" : "var(--parchment-dim)" }}>
             <SortIcon k={o.key} className="w-[1.35rem] h-[1.35rem]" />
             {active && (activeDir === "desc" ? <ArrowDown className="w-3.5 h-3.5" /> : <ArrowUp className="w-3.5 h-3.5" />)}
-          </a>
+          </Link>
         );
       })}
     </div>
@@ -74,26 +75,6 @@ export default async function HomePage({ searchParams: searchParamsPromise }: Pa
   const cols = Math.min(8, Math.max(2, Number(searchParams.cols ?? savedCols ?? 7)));
   const PAGE_SIZE = 48;
 
-  const [health, seriesList, authorsList, tagsList, customCols, readingMap] = await Promise.all([
-    api.health().catch(() => null),
-    api.series({ page_size: 300 }),
-    api.authors({ page_size: 300 }),
-    api.tags(),
-    api.customColumns().catch(() => []),
-    api.getReadingMap().catch(() => null),
-  ]);
-  // Unified "Date read" sort spans digital (mapped Calibre date column) + physical.
-  // Other datetime columns still become extra sort options, but skip the mapped
-  // one (it's represented by the unified option).
-  const mappedDateLabel = readingMap?.date ?? null;
-  const dateSorts = customCols
-    .filter(c => c.datatype === "datetime" && c.label !== mappedDateLabel)
-    .map(c => ({ key: `custom:${c.label}`, label: c.name }));
-  const sortOptions = [
-    { key: "title", label: "Title" }, { key: "author", label: "Author" },
-    { key: "added", label: "Date added" }, { key: "date_read", label: "Date read" }, ...dateSorts,
-  ];
-
   // Default sort: when viewing Read books, newest-read first; otherwise most
   // recently added first. Series view keeps series order. Users can override.
   const readActive = searchParams.read === "read";
@@ -116,10 +97,29 @@ export default async function HomePage({ searchParams: searchParamsPromise }: Pa
     page_size:       PAGE_SIZE,
   };
 
-  let books = null;
-  if (!view) {
-    books = await api.books({ ...fetchParams, page: 1 }).catch(() => null);
-  }
+  // One fully-parallel round: fetch only what the requested view needs. This
+  // used to fetch series/authors/tags (page_size up to 5000) on EVERY load and
+  // serialize the books query behind all of them.
+  const [health, seriesList, authorsList, tagsList, customCols, readingMap, books] = await Promise.all([
+    api.health().catch(() => null),
+    view === "series"  ? api.series({ page_size: 300 })  : Promise.resolve([]),
+    view === "authors" ? api.authors({ page_size: 300 }) : Promise.resolve([]),
+    view === "tags"    ? api.tags()                      : Promise.resolve([]),
+    !view ? api.customColumns().catch(() => []) : Promise.resolve([]),
+    !view ? api.getReadingMap().catch(() => null) : Promise.resolve(null),
+    !view ? api.books({ ...fetchParams, page: 1 }).catch(() => null) : Promise.resolve(null),
+  ]);
+  // Unified "Date read" sort spans digital (mapped Calibre date column) + physical.
+  // Other datetime columns still become extra sort options, but skip the mapped
+  // one (it's represented by the unified option).
+  const mappedDateLabel = readingMap?.date ?? null;
+  const dateSorts = customCols
+    .filter(c => c.datatype === "datetime" && c.label !== mappedDateLabel)
+    .map(c => ({ key: `custom:${c.label}`, label: c.name }));
+  const sortOptions = [
+    { key: "title", label: "Title" }, { key: "author", label: "Author" },
+    { key: "added", label: "Date added" }, { key: "date_read", label: "Date read" }, ...dateSorts,
+  ];
 
   const activeFilter = searchParams.series_id || searchParams.author_id || searchParams.tag_id || searchParams.search || searchParams.custom || searchParams.read;
 
@@ -177,7 +177,7 @@ export default async function HomePage({ searchParams: searchParamsPromise }: Pa
                     <FormatFilter searchParams={searchParams} />
                     <ReadFilter searchParams={searchParams} />
                     <div className="w-px h-5" style={{ background: "var(--ink-muted)" }} />
-                    <a href={`/?${new URLSearchParams({
+                    <Link href={`/?${new URLSearchParams({
                         ...Object.fromEntries(Object.entries(searchParams).filter(([,v])=>v) as [string,string][]),
                         collapse: collapse ? "0" : "1", page: "1",
                       })}`}
@@ -186,7 +186,7 @@ export default async function HomePage({ searchParams: searchParamsPromise }: Pa
                       className="flex items-center transition-colors"
                       style={{ color: collapse ? "var(--gold-light)" : "var(--parchment-dim)" }}>
                       <Combine className="w-5 h-5" />
-                    </a>
+                    </Link>
                     <SortRow searchParams={searchParams} activeSort={activeSort} activeDir={activeDir} sortOptions={sortOptions} />
                   </div>
                 </div>
@@ -221,7 +221,7 @@ function CountBreadcrumb({ activeFilter, total }: { activeFilter: boolean; total
     <div className="min-w-0 truncate" style={{fontFamily:"var(--mono)",fontSize:"0.75rem",color:"var(--parchment-dim)"}}>
       {activeFilter ? (
         <span>
-          <a href="/" style={{color:"var(--gold-light)"}} className="hover:underline">← All books</a>
+          <Link href="/" style={{color:"var(--gold-light)"}} className="hover:underline">← All books</Link>
           <span style={{opacity:0.5}}> · {total.toLocaleString()} results</span>
         </span>
       ) : (
@@ -239,7 +239,7 @@ function FormatFilter({ searchParams }: { searchParams: Awaited<PageProps["searc
       <span style={{fontFamily:"var(--mono)",fontSize:"0.6rem",opacity:0.5}}>format</span>
       <div className="flex items-center gap-1" style={{fontFamily:"var(--mono)",fontSize:"0.65rem"}}>
         {(["all","digital","physical"] as const).map(f => (
-          <a key={f} href={`/?${new URLSearchParams({ ...rest, format: f, page: "1" })}`}
+          <Link key={f} href={`/?${new URLSearchParams({ ...rest, format: f, page: "1" })}`}
             className="px-2 py-1 rounded-sm transition-colors capitalize"
             style={{
               background: active===f ? "rgba(107,78,30,0.4)" : "transparent",
@@ -247,7 +247,7 @@ function FormatFilter({ searchParams }: { searchParams: Awaited<PageProps["searc
               border: `1px solid ${active===f ? "var(--gold-dim)" : "var(--ink-muted)"}`,
             }}>
             {f}
-          </a>
+          </Link>
         ))}
       </div>
     </div>
@@ -260,7 +260,7 @@ function SeriesView({ series, cols }: { series: any[]; cols: number }) {
       <SectionTitle title="Series" count={series.length} />
       <div className={`grid ${colsClass(cols)} gap-2.5 md:gap-7 stagger`}>
         {series.map((s:any) => (
-          <a key={s.id} href={`/?series_id=${s.id}`} className="group flex flex-col fade-up">
+          <Link key={s.id} href={`/?series_id=${s.id}`} className="group flex flex-col fade-up">
             <div className="relative aspect-[2/3] w-full overflow-hidden rounded-sm cover-shadow group-hover:cover-shadow-hover transition-all duration-300 group-hover:-translate-y-1">
               {s.first_book_has_cover && s.first_book_cover_url ? (
                 <img
@@ -289,7 +289,7 @@ function SeriesView({ series, cols }: { series: any[]; cols: number }) {
                 {s.name}
               </div>
             </div>
-          </a>
+          </Link>
         ))}
       </div>
     </div>
@@ -302,7 +302,7 @@ function AuthorsView({ authors }: { authors: any[] }) {
       <SectionTitle title="Authors" count={authors.length} />
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-1.5">
         {authors.map((a:any) => (
-          <a key={a.id} href={`/?author_id=${a.id}`}
+          <Link key={a.id} href={`/?author_id=${a.id}`}
             className="group flex items-center justify-between px-4 py-2.5 rounded-sm border border-transparent hover:border-[var(--gold-dim)] transition-colors"
             style={{background:"var(--ink-soft)"}}>
             <span className="truncate group-hover:text-[var(--gold-light)] transition-colors"
@@ -313,7 +313,7 @@ function AuthorsView({ authors }: { authors: any[] }) {
                   style={{fontFamily:"var(--mono)",fontSize:"0.7rem",color:"var(--parchment-dim)"}}>
               {a.book_count}
             </span>
-          </a>
+          </Link>
         ))}
       </div>
     </div>
@@ -326,9 +326,9 @@ function TagsView({ tags }: { tags: any[] }) {
       <SectionTitle title="Genres" count={tags.length} />
       <div className="flex flex-wrap gap-2">
         {[...tags].sort((a,b)=>b.book_count-a.book_count).map((t:any) => (
-          <a key={t.id} href={`/?tag_id=${t.id}`} className="tag-pill">
+          <Link key={t.id} href={`/?tag_id=${t.id}`} className="tag-pill">
             {t.name} <span style={{opacity:0.6,marginLeft:"4px"}}>{t.book_count}</span>
-          </a>
+          </Link>
         ))}
       </div>
     </div>

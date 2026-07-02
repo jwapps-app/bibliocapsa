@@ -32,7 +32,8 @@ def nav_counts(request: Request):
         import psycopg2
         from psycopg2.extras import RealDictCursor
         from .. import auth
-        pg = psycopg2.connect(get_database_url(), cursor_factory=RealDictCursor)
+        from ..pg_database import get_pg
+        pg = get_pg()
         cur = pg.cursor()
         # Native physical books count toward the library total (no genre restriction
         # on native books in this build).
