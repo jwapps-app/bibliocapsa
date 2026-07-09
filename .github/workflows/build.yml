@@ -59,6 +59,7 @@ jobs:
       contents: read
       packages: write
     strategy:
+      fail-fast: false   # one image failing must not cancel the others
       matrix:
         include:
           - name: backend
