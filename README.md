@@ -6,8 +6,6 @@
 
 Bibliocapsa sits on top of your existing [Calibre](https://calibre-ebook.com/) library (read-only by default; it never touches your files unless you deliberately push a change back) and adds a modern multi-user web experience, physical-book tracking, and a complete, built-in KOReader stack. It runs in Docker on your own hardware, so your reading life stays private, ad-free, and entirely yours.
 
-> _Screenshots go here._
-
 ---
 
 ## Why it's different
@@ -20,12 +18,15 @@ Bibliocapsa sits on top of your existing [Calibre](https://calibre-ebook.com/) l
 
 ## Feature highlights
 
-- Cover-forward, responsive grid; browse by series, author, or genre; six themes
-- **Full-text search inside your books' content** plus in-browser EPUB/PDF readers
-- Physical books as first-class citizens: manual add or Goodreads CSV import, auto-generated covers, shelf location, lending tracker
+- Cover-forward, responsive grid; browse by series, author, or genre; six themes; finished books wear a check on the cover
+- **Relevance-ranked full-text search inside your books' content** (BM25 + stemming; put a `"phrase"` in quotes for an exact match), plus in-browser EPUB and PDF readers with paged or continuous scroll
+- **Installable as an app (PWA)** on phone or desktop, with an offline-resilient shell
+- Physical books as first-class citizens: manual add or Goodreads CSV import, auto-generated covers, shelf location, lending tracker; flag any Calibre ebook as also owned in print, and delete what you no longer keep
 - Per-user read history, reading goals, year-in-review, want-to-read list
+- Finish a book in one step: mark it read, and its status + finish date push back to Calibre on the next sync
 - Automatic metadata & cover enrichment (Open Library, optional Hardcover)
 - Calibre custom-column support, edited in-app and synced back on your terms
+- Fast on a phone or over the network: thumbnailed covers, compressed responses, app-like navigation
 
 See [ABOUT.md](ABOUT.md) for the full tour.
 

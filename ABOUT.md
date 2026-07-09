@@ -35,25 +35,28 @@ Set it up once with your Bibliocapsa username and password, point KOReader at on
 
 **A library that looks the part**
 - Cover-forward grid with adjustable density, responsive from phone to desktop
-- Browse by series, author, or genre
+- Browse by series, author, or genre; finished books show a check right on the cover
 - Six color themes and three typography schemes, with theme-aware icons and favicons
-- Fast, virtualized scrolling even across thousands of titles
+- Fast even across thousands of titles: virtualized scrolling, thumbnailed covers, and app-like navigation between views
+- Installable as a PWA on phone or desktop, with an offline-resilient shell
 
 **Find anything**
-- Title/author search *and* true full-text search **inside** your books' content
-- Read EPUBs and PDFs right in the browser, with search inside the reader
+- Title/author search *and* **relevance-ranked** full-text search **inside** your books' content (BM25 with stemming; wrap a `"phrase"` in quotes for an exact match)
+- Read EPUBs and PDFs right in the browser — paged or continuous scroll — with search inside the reader
 - Sort by title, author, date added, or date read; filter by format and read status; collapse series to a single cover
 
 **Physical books, finally first-class**
 - Add paper books by hand, or import your reading history from a CSV export, choosing which shelves mean "I own this physically"
+- Flag any Calibre ebook as *also* owned in print (and remove that flag), so one title can be Digital + Physical at once
 - Automatically generates clean, Calibre-style covers for physical books that lack artwork (regenerate the look or upload your own)
-- Track shelf/room location and who you've lent each book to
+- Track shelf/room location and who you've lent each book to; delete books you no longer keep
 
 **Reading life, tracked and yours**
 - Per-user read history that records every time you finish a book, with your re-reads laid out by date
+- Finish a book in one step: mark it read, and its read status + finish date export back to Calibre on the next sync
 - Personal star ratings plus optional community ratings
 - A reading-statistics dashboard (time, pages, per-book sessions) fed straight from KOReader
-- "Currently Reading," pulled from both KOReader and manual status
+- "Currently Reading," pulled from both KOReader and manual status — a book leaves the list on its own once you finish it
 
 **Rich metadata, automatically**
 - Auto-fill missing descriptions, page counts, publishers, and cover art from open metadata sources, in bulk or on demand
@@ -61,7 +64,7 @@ Set it up once with your Bibliocapsa username and password, point KOReader at on
 - Smart, rule-based shelves alongside hand-curated ones (shared or private)
 
 **Private and easy to run**
-- Self-hosted with Docker; a single bundled reverse proxy puts the whole app behind one clean URL (works smoothly behind a tunnel or HTTPS domain)
+- Self-hosted with Docker; a single bundled reverse proxy puts the whole app behind one clean URL (works smoothly behind a tunnel or HTTPS domain), with compressed responses over the wire
 - Sensible security built in: per-account access control, login rate-limiting, sanitized content, and guarded external requests
 - No telemetry, no cloud dependency, no subscription
 

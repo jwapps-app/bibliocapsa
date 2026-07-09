@@ -1,5 +1,16 @@
 #!/usr/bin/env bash
-# Build & push Bibliocapsa images to GitHub Container Registry (GHCR).
+# MANUAL FALLBACK — images normally publish via GitHub Actions.
+# ============================================================================
+# Since v1.18.0, .github/workflows/build.yml builds and pushes all three images
+# from CI on every push to main / v* tag. That is the primary path: a git push
+# ships a release and nothing here needs to run.
+#
+# This script stays only as an escape hatch (e.g. CI is down and you must
+# publish from a workstation). It needs a `docker login ghcr.io` with a
+# write:packages PAT — which this machine normally does NOT have, since the
+# shared ghcr.io credential is a read:packages token used for pulling. Expect a
+# `denied: write_package` unless you re-login first. Prefer CI.
+# ============================================================================
 #
 #   GHCR_USER=<your-github-username-lowercase> ./build.sh [version] [images…]
 #   e.g.  GHCR_USER=yourname ./build.sh 1.0            # all three images
@@ -9,9 +20,6 @@
 # Building only what changed matters: a web-only release doesn't need the
 # backend image (whose calibre layer, if the buildx cache ever evicts it, takes
 # 15-40 min to rebuild under amd64 emulation on Apple Silicon).
-#
-# First run only: docker login ghcr.io  (username = GitHub user, password = a
-# Personal Access Token with write:packages). See DEPLOY.md.
 set -euo pipefail
 
 GHCR_USER="${GHCR_USER:?Set GHCR_USER to your lowercase GitHub username}"
