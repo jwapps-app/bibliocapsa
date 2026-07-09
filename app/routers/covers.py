@@ -61,7 +61,7 @@ def get_cover(book_id: int, request: Request,
             raise HTTPException(status_code=404, detail=f"Book {book_id} not found")
 
     if not row["has_cover"]:
-        # Return a 204 or placeholder
+        # No cover: serve the bundled placeholder (404 only if that's missing too).
         if os.path.isfile(PLACEHOLDER_COVER):
             return FileResponse(PLACEHOLDER_COVER, media_type="image/jpeg")
         raise HTTPException(status_code=404, detail="No cover available")

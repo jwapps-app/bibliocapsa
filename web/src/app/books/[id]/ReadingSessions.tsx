@@ -3,11 +3,8 @@
 import { useState, useEffect } from "react";
 import { api } from "@/lib/api";
 import { Clock } from "lucide-react";
+import { fmtH } from "@/lib/format";
 
-const fmtH = (s: number) => {
-  const h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);
-  return h > 0 ? `${h}h ${m}m` : `${m}m`;
-};
 
 /** KOReader reading sessions for this Calibre book (current user). Renders only
  *  when the user has stats for it. */

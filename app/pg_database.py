@@ -26,8 +26,8 @@ def get_database_url() -> str:
 # ── Connection pool ───────────────────────────────────────────────────────────
 # Every request used to open (and tear down) several fresh psycopg2 connections —
 # auth, access checks, overlay merges, ratings, read status each made their own.
-# One shared pool removes that fixed cost. The wrapper below lets the ~119
-# existing `conn = _pg(); …; conn.close()` call sites work unchanged: close()
+# One shared pool removes that fixed cost. The wrapper below lets every
+# existing `conn = _pg(); …; conn.close()` call site work unchanged: close()
 # rolls back any open transaction and returns the connection to the pool.
 
 _pool = None
@@ -467,10 +467,3 @@ def init_postgres():
         logger.warning(f"PostgreSQL not available: {e}. Native library features disabled.")
 
 
-def get_pg_conn():
-    """Get a PostgreSQL connection (pooled)."""
-    conn = get_pg()
-    try:
-        yield conn
-    finally:
-        conn.close()

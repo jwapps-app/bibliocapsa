@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 LABEL org.opencontainers.image.title="Bibliocapsa"
-LABEL org.opencontainers.image.description="Read-only REST API for Calibre libraries"
+LABEL org.opencontainers.image.description="Bibliocapsa — self-hosted library manager: Calibre + physical books, KOReader sync"
 LABEL org.opencontainers.image.source="https://github.com/jwapps-app/bibliocapsa"
 
 # No root after setup

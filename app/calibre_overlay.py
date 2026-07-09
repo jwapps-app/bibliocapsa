@@ -3,8 +3,9 @@ Pending Calibre edit overlay.
 
 Edits to Calibre books are written to PostgreSQL (`calibre_edits`) instantly and
 merged over the read-only Calibre data when serving — so changes show up at once
-without touching Calibre. A later deliberate "Sync to Calibre" (Phase 2) applies
-them via calibredb and clears the rows.
+without touching Calibre. A deliberate "Sync to Calibre" (POST
+/api/calibre/sync → app/calibre_sync.py) applies them via calibredb and clears
+the rows.
 """
 
 import json
@@ -20,9 +21,7 @@ EDITABLE_FIELDS = {
 }
 
 
-def _pg():
-    from .pg_database import get_pg
-    return get_pg()
+from .pg_database import get_pg as _pg
 
 
 def get_edits(book_ids) -> dict:

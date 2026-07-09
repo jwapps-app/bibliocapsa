@@ -1,6 +1,7 @@
 """
-Pydantic response models for Bibliocapsa API.
-All models are read-only — no write endpoints exist.
+Pydantic response models for the Calibre-mirror endpoints (books, authors,
+series, tags). These views are read-only; edits go through the separate
+calibre_edits overlay + Sync to Calibre.
 """
 
 from __future__ import annotations

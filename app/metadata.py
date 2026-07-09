@@ -66,9 +66,6 @@ class Metadata:
     rating: Optional[float] = None  # community rating, normalized to 0–5
     source: Optional[str] = None  # "hardcover" | "openlibrary"
 
-    def is_useful(self) -> bool:
-        """A result is worth saving if it has a cover or a description."""
-        return bool(self.cover_url or self.description)
 
 
 def _clean_isbn(isbn: Optional[str]) -> Optional[str]:
@@ -349,7 +346,7 @@ def download_cover(url: str) -> Optional[tuple[bytes, str]]:
     # SSRF-safe fetch: validate every hop (redirects can point back inside the
     # network), don't auto-follow, and cap redirects + download size.
     class _NoRedirect(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, *a, **k):
+        def redirect_request(self, *a, **k):  # called by urllib, not by our code
             return None
     opener = urllib.request.build_opener(_NoRedirect)
     MAX_BYTES = 15 * 1024 * 1024

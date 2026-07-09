@@ -16,9 +16,7 @@ or (None, []) when unrestricted — callers skip them in that case.
 from typing import Optional
 
 
-def _pg():
-    from .pg_database import get_pg
-    return get_pg()
+from .pg_database import get_pg as _pg
 
 
 def get_restriction(user: Optional[dict]) -> Optional[set]:
@@ -67,23 +65,7 @@ def is_calibre_book_allowed(conn, book_id: int, allowed: Optional[set]) -> bool:
     return row is not None
 
 
-def filter_calibre_ids(conn, ids, allowed: Optional[set]) -> set:
-    """Return the subset of `ids` that carry an allowed genre."""
-    if allowed is None:
-        return set(ids)
-    if not ids:
-        return set()
-    id_qs = ",".join("?" * len(ids))
-    g_qs = ",".join("?" * len(allowed))
-    rows = conn.execute(
-        f"SELECT DISTINCT btl.book FROM books_tags_link btl JOIN tags t ON t.id = btl.tag "
-        f"WHERE btl.book IN ({id_qs}) AND LOWER(t.name) IN ({g_qs})",
-        [*ids, *allowed],
-    ).fetchall()
-    return {r[0] for r in rows}
 
-
-# ── Native (PostgreSQL) ───────────────────────────────────────────────────────
 def native_predicate(allowed: Optional[set]):
     """EXISTS clause: a native book's categories overlap the allow-list."""
     if allowed is None:

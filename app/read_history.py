@@ -8,9 +8,7 @@ original/first date (see calibre_read._writeback, which never overwrites it).
 """
 
 
-def _pg():
-    from .pg_database import get_pg
-    return get_pg()
+from .pg_database import get_pg as _pg
 
 
 def list_for(book_id: int, book_source: str, user_id: int) -> list:

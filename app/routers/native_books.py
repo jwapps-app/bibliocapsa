@@ -20,12 +20,8 @@ router = APIRouter()
 COVER_CACHE_DIR = os.getenv("COVER_CACHE_DIR", "/app/cover_cache")
 
 
-def _require_admin(request: Request):
-    """Library writes/enrichment are admin-only (members read-only)."""
-    from .. import auth
-    u = auth.authenticate_request(request)
-    if not u or u.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin only")
+# Library writes/enrichment are admin-only (members read-only).
+from ..auth import require_admin as _require_admin
 
 
 class NativeBookCreate(BaseModel):
@@ -92,9 +88,7 @@ class NativeBook(BaseModel):
     created_at: Optional[datetime] = None
 
 
-def _pg():
-    from ..pg_database import get_pg
-    return get_pg()
+from ..pg_database import get_pg as _pg
 
 
 @router.get("", response_model=list[NativeBook], summary="List native library books")

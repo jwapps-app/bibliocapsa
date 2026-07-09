@@ -25,10 +25,8 @@ export function ThemePicker({ collapsed, iconOnly }: { collapsed?: boolean; icon
   const [font, setFontState] = useState("classic");
   const ref = useRef<HTMLDivElement>(null);
 
-  const setFavicon = applyFavicon;
-  const setAppleIcon = applyAppleIcon;
 
-  const applyTheme = (id: string) => { document.documentElement.dataset.theme = id; localStorage.setItem("bc-theme", id); setFavicon(); setAppleIcon(id); };
+  const applyTheme = (id: string) => { document.documentElement.dataset.theme = id; localStorage.setItem("bc-theme", id); applyFavicon(); applyAppleIcon(id); };
   const applyFont = (id: string) => { document.documentElement.dataset.font = id; localStorage.setItem("bc-font", id); };
 
   useEffect(() => {
@@ -39,7 +37,7 @@ export function ThemePicker({ collapsed, iconOnly }: { collapsed?: boolean; icon
     api.me().then(u => {
       if (u?.theme) { applyTheme(u.theme); setThemeState(u.theme); }
       if (u?.font) { applyFont(u.font); setFontState(u.font); }
-    }).catch(() => {}).finally(() => { const t = localStorage.getItem("bc-theme") || "library"; setFavicon(); setAppleIcon(t); });
+    }).catch(() => {}).finally(() => { const t = localStorage.getItem("bc-theme") || "library"; applyFavicon(); applyAppleIcon(t); });
   }, []);
   useEffect(() => {
     const close = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };

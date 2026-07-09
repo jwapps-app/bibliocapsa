@@ -15,9 +15,7 @@ def _user(request: Request) -> dict:
     return u
 
 
-def _pg():
-    from ..pg_database import get_pg
-    return get_pg()
+from ..pg_database import get_pg as _pg
 
 
 class WishItem(BaseModel):

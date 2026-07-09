@@ -7,7 +7,7 @@ from that), every password is stored as TWO derivations, computed when the
 plaintext is briefly in hand (register / login / change):
 
   * password_hash — PBKDF2-HMAC-SHA256, salted   → web + API login (strong)
-  * kosync_key    — md5(password)                 → KOReader endpoints only
+  * kosync_key    — hmac(secret, md5(password))   → KOReader endpoints only
 
 Sessions are server-side rows in `sessions` (revocable, no signing secret).
 All crypto here is Python stdlib — no extra dependencies.
@@ -21,19 +21,12 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-import psycopg2
-from psycopg2.extras import RealDictCursor
-
-from .pg_database import get_database_url
-
 PBKDF2_ITERATIONS = 200_000
 SESSION_TTL_DAYS = 30
 SESSION_COOKIE = "bibliocapsa_session"
 
 
-def _pg():
-    from .pg_database import get_pg
-    return get_pg()
+from .pg_database import get_pg as _pg
 
 
 # ── Password hashing ──────────────────────────────────────────────────────────
@@ -200,3 +193,13 @@ def authenticate_request(request) -> Optional[dict]:
             return None
 
     return None
+
+
+def require_admin(request) -> dict:
+    """403 unless the requester is an admin; returns the user dict. The single
+    admin gate — routers import it as their _require_admin."""
+    u = authenticate_request(request)
+    if not u or u.get("role") != "admin":
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="Admin only")
+    return u

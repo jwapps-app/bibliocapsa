@@ -26,9 +26,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _pg():
-    from ..pg_database import get_pg
-    return get_pg()
+from ..pg_database import get_pg as _pg
 
 
 def _err(status: int, code: int, message: str) -> JSONResponse:

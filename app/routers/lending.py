@@ -11,14 +11,9 @@ from datetime import datetime
 router = APIRouter()
 
 
-def _require_admin(request: Request) -> dict:
-    """Lending is owner-managed (tracks who borrowed physical books) and exposes
-    borrower PII, so every endpoint is admin-only."""
-    from .. import auth
-    u = auth.authenticate_request(request)
-    if not u or u.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-    return u
+# Lending is owner-managed (tracks who borrowed physical books) and exposes
+# borrower PII, so every endpoint is admin-only.
+from ..auth import require_admin as _require_admin
 
 
 class LoanCreate(BaseModel):
@@ -27,7 +22,6 @@ class LoanCreate(BaseModel):
     borrower_name: str
     borrower_email: Optional[str] = None
     borrower_phone: Optional[str] = None
-    lent_by: Optional[int] = None
     due_date: Optional[datetime] = None
     notes: Optional[str] = None
 
@@ -56,9 +50,7 @@ class Loan(BaseModel):
     has_cover: bool = False
 
 
-def _pg():
-    from ..pg_database import get_pg
-    return get_pg()
+from ..pg_database import get_pg as _pg
 
 
 def _to_loan(row: dict) -> Loan:
@@ -135,6 +127,8 @@ def list_loans(
         conn.close()
         return _enrich([_to_loan(dict(r)) for r in rows])
     except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("lending query failed: %s", e)
         raise HTTPException(status_code=503, detail="Database unavailable")
 
 
@@ -206,4 +200,6 @@ def get_overdue(request: Request):
         conn.close()
         return _enrich([_to_loan(dict(r)) for r in rows])
     except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("lending query failed: %s", e)
         raise HTTPException(status_code=503, detail="Database unavailable")

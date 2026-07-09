@@ -1,6 +1,6 @@
 """
 Bibliocapsa — Self-hosted personal library system
-- Read-only Calibre mirror (7,000+ ebooks)
+- Calibre mirror (read-only views; edits queue in an overlay until a deliberate Sync)
 - Native library for physical/scanned books
 - Lending, family libraries, reading progress
 - Full-text search inside book content
@@ -141,7 +141,7 @@ async def require_auth(request, call_next):
         request.state.user = user
     return await call_next(request)
 
-# ── Calibre mirror (read-only) ──────────────────────────────────────────────
+# ── Calibre mirror (reads; writes queue via the calibre_edits overlay) ──────
 app.include_router(health.router,       prefix="/api",               tags=["Health"])
 app.include_router(books.router,        prefix="/api/books",         tags=["Books"])
 app.include_router(authors.router,      prefix="/api/authors",       tags=["Authors"])

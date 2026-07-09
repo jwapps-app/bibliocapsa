@@ -53,18 +53,17 @@ class ShelfBook(BaseModel):
     reading_status: Optional[str] = None  # 'read' | 'reading' | None — drives the cover badge
 
 
-def _pg():
-    from ..pg_database import get_pg
-    return get_pg()
+from ..pg_database import get_pg as _pg
 
 
 _tables_ensured = False
 
 
 def _ensure_tables():
-    """Create shelf tables if missing (supplement to pg_database init). Runs its
-    DDL once per process — it used to run on every shelves request, which cost
-    ~10 round trips and took brief ACCESS EXCLUSIVE locks per sidebar render."""
+    """One-time-per-process shelf-table upkeep. Table CREATEs live in
+    init_postgres (startup); this only self-heals pre-smart-shelf installs
+    (columns added after the original release) and seeds/renames the default
+    smart shelves."""
     global _tables_ensured
     if _tables_ensured:
         return
@@ -72,27 +71,8 @@ def _ensure_tables():
         conn = _pg()
         cur = conn.cursor()
         cur.execute("""
-            CREATE TABLE IF NOT EXISTS shelves (
-                id          SERIAL PRIMARY KEY,
-                name        TEXT NOT NULL,
-                description TEXT,
-                is_smart    BOOLEAN DEFAULT FALSE,
-                smart_rules JSONB,
-                owner_id    INTEGER,
-                is_shared   BOOLEAN DEFAULT FALSE,
-                created_at  TIMESTAMPTZ DEFAULT NOW()
-            );
-            CREATE TABLE IF NOT EXISTS shelf_books (
-                shelf_id    INTEGER REFERENCES shelves(id) ON DELETE CASCADE,
-                book_id     INTEGER NOT NULL,
-                book_source TEXT NOT NULL DEFAULT 'calibre',
-                added_at    TIMESTAMPTZ DEFAULT NOW(),
-                PRIMARY KEY (shelf_id, book_id, book_source)
-            );
-            -- Self-heal: the base `shelves` table may have been created by the
-            -- startup init WITHOUT these columns (CREATE TABLE IF NOT EXISTS above
-            -- won't add them to an existing table). On a fresh database this is
-            -- what previously caused /api/shelves to 503.
+            -- Legacy installs only: these columns postdate the original shelves
+            -- table and CREATE TABLE IF NOT EXISTS never adds columns.
             ALTER TABLE shelves ADD COLUMN IF NOT EXISTS is_smart    BOOLEAN DEFAULT FALSE;
             ALTER TABLE shelves ADD COLUMN IF NOT EXISTS smart_rules JSONB;
             ALTER TABLE shelves ADD COLUMN IF NOT EXISTS owner_id    INTEGER;
@@ -331,11 +311,7 @@ def _resolve_smart_shelf(rules: dict, base_url: str, username: str = None, allow
                 except Exception:
                     pass
 
-            def _cal_epoch(ts):
-                try:
-                    return _dt.datetime.fromisoformat(str(ts)).timestamp()
-                except Exception:
-                    return 0.0
+            from .books import _cal_epoch
 
             merged = []  # (epoch, ShelfBook)
             for row in cal:
@@ -600,6 +576,8 @@ def list_shelves(request: Request):
             ))
         return result
     except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("list_shelves failed: %s", e)
         raise HTTPException(status_code=503, detail="Database unavailable")
 
 
@@ -827,6 +805,7 @@ def get_shelf_books(shelf_id: int, request: Request):
                         cover_url=nb.get("cover_url"),
                         added_at=entry["added_at"],
                         location=nb.get("location"),
+                        has_digital=(nb.get("format") == "digital"),
                     ))
         return _annotate_read_status(books)
     except HTTPException:

@@ -52,11 +52,7 @@ class ImportStatus(BaseModel):
 _import_status: dict = {"status": "idle"}
 
 
-def _require_admin(request: Request):
-    from .. import auth
-    u = auth.authenticate_request(request)
-    if not u or u.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin only")
+from ..auth import require_admin as _require_admin
 
 
 def _clean_isbn(raw: str) -> Optional[str]:
@@ -76,9 +72,7 @@ def _parse_gr_date(s: Optional[str]):
     return None
 
 
-def _pg():
-    from ..pg_database import get_pg
-    return get_pg()
+from ..pg_database import get_pg as _pg
 
 
 def _ensure_goodreads_tables(conn):
@@ -126,15 +120,8 @@ def _ensure_goodreads_tables(conn):
             UNIQUE(book_id, book_source, source)
         );
 
-        -- Track which Calibre books are also owned physically
-        CREATE TABLE IF NOT EXISTS book_ownership (
-            book_id     INTEGER NOT NULL,
-            book_source TEXT NOT NULL DEFAULT 'calibre',
-            has_digital BOOLEAN DEFAULT FALSE,
-            has_physical BOOLEAN DEFAULT FALSE,
-            physical_location TEXT,
-            PRIMARY KEY (book_id, book_source)
-        );
+        -- book_ownership (also-physical tracking) is created by init_postgres
+        -- at startup; no duplicate DDL here.
     """)
     conn.commit()
 

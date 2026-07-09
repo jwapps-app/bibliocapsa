@@ -157,9 +157,7 @@ def _base_url(request: Request) -> str:
     return str(request.base_url).rstrip("/")
 
 
-def _pg():
-    from ..pg_database import get_pg
-    return get_pg()
+from ..pg_database import get_pg as _pg
 
 
 def _native_to_summary(nb: dict, base_url: str) -> BookSummary:
@@ -497,9 +495,6 @@ def list_books(
 
         # Digital filter — all Calibre books (they're all downloadable, including dual-format)
         # No additional filtering needed; the standard Calibre query already covers this
-        if format_filter == "digital":
-            pass  # show all Calibre books
-
         sort_map = {
             "title":         "b.sort",
             "author":        "b.author_sort",
@@ -540,9 +535,6 @@ def list_books(
         ownership_map = {}
         if book_ids:
             try:
-                from ..pg_database import get_database_url
-                import psycopg2
-                from psycopg2.extras import RealDictCursor
                 from ..pg_database import get_pg
                 pg = get_pg()
                 cur = pg.cursor()

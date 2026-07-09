@@ -50,8 +50,6 @@ def _wrap(text: str, max_chars: int, max_lines: int) -> list:
                 break
     if cur and len(lines) < max_lines:
         lines.append(cur)
-    if len(lines) > max_lines:
-        lines = lines[:max_lines]
     # Mark truncation if we ran out of room mid-title.
     used = sum(len(l.split()) for l in lines)
     if used < len(words) and lines:

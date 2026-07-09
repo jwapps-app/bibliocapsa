@@ -28,15 +28,12 @@ def nav_counts(request: Request):
     except Exception:
         pass
     try:
-        from ..pg_database import get_database_url
-        import psycopg2
-        from psycopg2.extras import RealDictCursor
         from .. import auth
         from ..pg_database import get_pg
         pg = get_pg()
         cur = pg.cursor()
-        # Native physical books count toward the library total (no genre restriction
-        # on native books in this build).
+        # Native physical books count toward the library total, scoped by the
+        # caller's genre restriction (same predicate the native list uses).
         nat_pred, nat_params = access.native_predicate(allowed)
         where = "(format != 'digital' OR format IS NULL)" + (f" AND {nat_pred}" if nat_pred else "")
         cur.execute(f"SELECT COUNT(*) AS c FROM native_books WHERE {where}", nat_params)

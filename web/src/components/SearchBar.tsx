@@ -3,6 +3,7 @@ import { useState, useTransition, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Search, X } from "lucide-react";
 import clsx from "clsx";
+import { publicUrl } from "@/lib/api";
 
 export function SearchBar({ defaultValue }: { defaultValue?: string }) {
   const router = useRouter();
@@ -113,7 +114,7 @@ export function FullTextSearchBar() {
               return (
                 <div key={i} className="flex gap-4 p-4 rounded-sm border transition-colors"
                   style={{background:"var(--ink-soft)",borderColor:"var(--ink-muted)"}}>
-                  {r.has_cover && r.cover_url && <img src={r.cover_url.replace(/^https?:\/\/[^/]+/, "")} alt={r.title} className="w-10 h-14 object-cover rounded-sm shrink-0 cover-shadow" />}
+                  {r.has_cover && r.cover_url && <img src={publicUrl(r.cover_url) ?? ""} alt={r.title} className="w-10 h-14 object-cover rounded-sm shrink-0 cover-shadow" />}
                   <div className="min-w-0 flex-1">
                     <div style={{fontFamily:"var(--serif)",fontSize:"1rem",color:"var(--parchment)"}}>{r.title}</div>
                     <div className="text-xs mb-2 opacity-50" style={{fontFamily:"var(--body)",color:"var(--parchment-dim)"}}>{r.authors.join(", ")} · {r.format}</div>

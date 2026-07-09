@@ -55,7 +55,6 @@ def get_conn() -> Generator[sqlite3.Connection, None, None]:
     uri = f"file:{_DB_PATH}?mode=ro"
     conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    # Extra safety: set journal_mode to ensure no WAL writes slip through
     try:
         yield conn
     finally:

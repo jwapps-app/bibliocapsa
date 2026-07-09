@@ -25,6 +25,7 @@ MIME_TYPES = {
     "DOCX": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "CBZ":  "application/x-cbz",
     "CBR":  "application/x-cbr",
+    "DJVU": "image/vnd.djvu",
 }
 
 

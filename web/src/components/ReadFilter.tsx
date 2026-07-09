@@ -1,6 +1,6 @@
 /** Built-in Read/Unread filter — a segmented pill control matching the Format
  *  filter. Spans digital (Calibre) + physical (native) via the unified read
- *  status. Sets ?read=read|reading|unread. */
+ *  status. Sets ?read=read|unread. */
 const OPTIONS: [string, string][] = [["", "All"], ["read", "Read"], ["unread", "Unread"]];
 
 export function ReadFilter({ searchParams }: { searchParams: Record<string, string | undefined> }) {

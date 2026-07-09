@@ -7,7 +7,10 @@ import { BookOpen, Loader2 } from "lucide-react";
 
 function LoginInner() {
   const params = useSearchParams();
-  const next = params.get("next") || "/";
+  // Only same-origin path redirects: a raw ?next= would allow an off-site
+  // redirect after login (e.g. ?next=https://evil.example).
+  const rawNext = params.get("next") || "/";
+  const next = rawNext.startsWith("/") && !rawNext.startsWith("//") ? rawNext : "/";
 
   const [setupRequired, setSetupRequired] = useState<boolean | null>(null);
   const [username, setUsername] = useState("");

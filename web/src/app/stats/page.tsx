@@ -1,13 +1,10 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { api } from "@/lib/api";
+import { api, publicUrl } from "@/lib/api";
 import { ArrowLeft, Loader2, Clock, BookOpen, CalendarDays, Layers, Target, Sparkles } from "lucide-react";
+import { fmtH } from "@/lib/format";
 
-const fmtH = (s: number) => {
-  const h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);
-  return h > 0 ? `${h}h ${m}m` : `${m}m`;
-};
 
 const PERIODS = [[0, "All time"], [365, "Year"], [90, "90 days"], [30, "30 days"]] as const;
 const SORTS = [["seconds", "Time"], ["pages_read", "Pages"], ["last_open", "Recent"], ["title", "Title"]] as const;
@@ -105,7 +102,7 @@ export default function StatsPage() {
                   className={`flex items-center gap-3 p-2.5 rounded-sm border ${b.calibre_book_id ? "hover:border-[var(--gold-dim)]" : "cursor-default"}`}
                   style={{ background: "var(--ink-soft)", borderColor: "var(--ink-muted)" }}>
                   {b.cover_url
-                    ? <img src={b.cover_url.replace(/^https?:\/\/[^/]+/, "")} alt="" className="w-8 h-12 object-cover rounded-sm shrink-0" />
+                    ? <img src={publicUrl(b.cover_url) ?? ""} alt="" className="w-8 h-12 object-cover rounded-sm shrink-0" />
                     : <div className="w-8 h-12 rounded-sm shrink-0" style={{ background: "var(--ink-muted)" }} />}
                   <div className="min-w-0 flex-1">
                     <div className="truncate" style={{ fontFamily: "var(--serif)", fontSize: "0.95rem", color: "var(--parchment)" }}>{b.title}</div>

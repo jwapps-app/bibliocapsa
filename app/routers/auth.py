@@ -57,9 +57,7 @@ def _rate_ok(key: str, limit: int, window: int = 300) -> bool:
     return len(bucket) <= limit
 
 
-def _pg():
-    from ..pg_database import get_pg
-    return get_pg()
+from ..pg_database import get_pg as _pg
 
 
 def _account_count() -> int:
@@ -255,11 +253,7 @@ def list_accounts(request: Request):
         conn.close()
 
 
-def _require_admin(request: Request) -> dict:
-    requester = auth.authenticate_request(request)
-    if not requester or requester.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin only")
-    return requester
+from ..auth import require_admin as _require_admin
 
 
 @router.get("/users/{user_id}/access", summary="Get a member's allowed genres (admin only)")

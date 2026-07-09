@@ -57,7 +57,7 @@ export default function SyncPage() {
     load();
   };
 
-  const fmtValue = (field: string, v: any) => Array.isArray(v) ? v.join(", ") : String(v ?? "");
+  const fmtValue = (v: any) => Array.isArray(v) ? v.join(", ") : String(v ?? "");
 
   return (
     <div className="min-h-screen flex flex-col items-center px-6 py-10">
@@ -186,7 +186,7 @@ export default function SyncPage() {
                   {Object.entries(it.fields).map(([field, v]) => (
                     <div key={field} className="flex gap-2" style={{ fontFamily: "var(--mono)", fontSize: "0.72rem" }}>
                       <span style={{ color: "var(--gold-light)", minWidth: "5.5rem" }}>{FIELD_LABELS[field] ?? (field.startsWith("custom:") ? `#${field.slice(7)}` : field)}</span>
-                      <span className="truncate" style={{ color: "var(--parchment-dim)" }}>{fmtValue(field, v)}</span>
+                      <span className="truncate" style={{ color: "var(--parchment-dim)" }}>{fmtValue(v)}</span>
                     </div>
                   ))}
                 </div>

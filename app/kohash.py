@@ -46,9 +46,8 @@ def record_document(book_id: int, fmt: str, path: str, book_source: str = "calib
     if not digest:
         return
     try:
-        from .pg_database import get_database_url
-        import psycopg2
-        conn = psycopg2.connect(get_database_url())
+        from .pg_database import get_pg
+        conn = get_pg()
         try:
             cur = conn.cursor()
             cur.execute(

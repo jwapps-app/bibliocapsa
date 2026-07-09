@@ -12,7 +12,6 @@ router = APIRouter()
 
 
 class ProgressUpdate(BaseModel):
-    user_id: Optional[int] = None
     device: Optional[str] = None
     book_source: str = "calibre"
     progress: Optional[float] = None   # 0.0 to 1.0
@@ -36,9 +35,7 @@ class ReadingProgress(BaseModel):
     last_read_at: Optional[datetime] = None
 
 
-def _pg():
-    from ..pg_database import get_pg
-    return get_pg()
+from ..pg_database import get_pg as _pg
 
 
 @router.get("/current", summary="Books the current user is reading (from KOReader sync)")
@@ -246,8 +243,6 @@ def reset_book_progress(book_id: int, request: Request):
         conn.commit()
         conn.close()
         return {"ok": True, "cleared_sync": cleared_sync, "cleared_browser": cleared_browser}
-    except HTTPException:
-        raise
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Database error: {e}")
 
@@ -316,8 +311,6 @@ def get_progress(book_id: int, request: Request, book_source: str = "calibre"):
         rows = cur.fetchall()
         conn.close()
         return [ReadingProgress(**dict(r)) for r in rows]
-    except HTTPException:
-        raise
     except Exception:
         raise HTTPException(status_code=503, detail="Database unavailable")
 

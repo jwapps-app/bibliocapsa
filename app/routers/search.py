@@ -1,7 +1,11 @@
 """
 Full-text search endpoint — searches inside actual book content.
-Uses Calibre's full-text-search.db (books_text table).
-This is a unique differentiator: no other self-hosted library tool offers this.
+
+Two tiers: the private BM25 index (app/search_index.py — relevance-ranked,
+stemmed, quoted-phrase aware) is the primary path; a plain LIKE scan over
+Calibre's full-text-search.db is the fallback while that index is missing or
+still building. Search inside book content is a unique differentiator: no other
+self-hosted library tool offers it.
 """
 
 from fastapi import APIRouter, Query, Request, HTTPException
@@ -10,18 +14,9 @@ from typing import Optional
 import os
 import sqlite3
 
+from ..search_index import FTS_DB, _STOPWORDS, _excerpt
+
 router = APIRouter()
-
-FTS_DB = os.getenv("CALIBRE_FTS_DB_PATH", "/calibre/full-text-search.db")
-
-# Common words dropped from multi-word queries so a natural phrase matches on its
-# meaningful words rather than every book containing "in"/"of"/"the".
-_STOPWORDS = {
-    "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from", "had",
-    "has", "have", "he", "her", "his", "in", "into", "is", "it", "its", "of", "on",
-    "or", "she", "that", "the", "their", "them", "they", "this", "to", "was",
-    "were", "will", "with", "you", "your",
-}
 
 
 class SearchResult(BaseModel):
@@ -40,30 +35,6 @@ class SearchResponse(BaseModel):
     results: list[SearchResult]
 
 
-def _excerpt(text: str, query: str, context: int = 200) -> str:
-    """Snippet around the best available match: prefer the full phrase, else the
-    first individual word that appears (so multi-word searches still show a
-    relevant passage rather than the start of the book)."""
-    lower_text = text.lower()
-    pos, match_len = -1, len(query)
-    for cand in [query, *query.split()]:
-        c = cand.lower().strip()
-        if not c:
-            continue
-        p = lower_text.find(c)
-        if p != -1:
-            pos, match_len = p, len(cand)
-            break
-    if pos == -1:
-        return text[:context].strip() + "…"
-    start = max(0, pos - context // 2)
-    end = min(len(text), pos + match_len + context // 2)
-    snippet = text[start:end].strip()
-    if start > 0:
-        snippet = "…" + snippet
-    if end < len(text):
-        snippet = snippet + "…"
-    return snippet
 
 
 @router.get("", response_model=SearchResponse, summary="Full-text search inside book content")
@@ -110,8 +81,10 @@ def full_text_search(
     if search_index.is_ready():
         try:
             total, hits = search_index.search(q, allowed_ids, limit, offset)
-        except Exception:
-            hits = None  # fall back to LIKE
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("BM25 index search failed, using LIKE fallback: %s", e)
+            hits = None
 
     if hits is None:
         try:
@@ -196,17 +169,13 @@ def full_text_search(
 @router.get("/index-status", summary="BM25 search-index status (admin)")
 def index_status(request: Request):
     from .. import auth, search_index
-    u = auth.authenticate_request(request)
-    if not u or u.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin only")
+    auth.require_admin(request)
     return search_index.status()
 
 
 @router.post("/reindex", summary="Refresh the BM25 search index (admin)")
 def reindex(request: Request):
     from .. import auth, search_index
-    u = auth.authenticate_request(request)
-    if not u or u.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin only")
+    auth.require_admin(request)
     search_index.sync_async("manual")
     return {"ok": True, "status": search_index.status()}

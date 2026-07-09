@@ -1,19 +1,13 @@
 import { memo } from "react";
 import type { BookSummary } from "@/lib/api";
-import { publicUrl } from "@/lib/api";
-import { Check } from "lucide-react";
+import { publicUrl, thumbUrl } from "@/lib/api";
 import clsx from "clsx";
+import { CoverBadges } from "./CoverBadges";
 import Link from "next/link";
 
 interface Props {
   book: BookSummary;
   className?: string;
-}
-
-/** Grid cells render at ~150–250 px; ask the backend for a 300 px thumbnail
- *  (covers 2× DPR) instead of the full ~240 KB original. */
-function thumb(u: string): string {
-  return u + (u.includes("?") ? "&" : "?") + "w=300";
 }
 
 function BookCardImpl({ book, className }: Props) {
@@ -41,7 +35,7 @@ function BookCardImpl({ book, className }: Props) {
            style={{ background: "var(--ink-soft)", border: "3px solid var(--cover-border)" }}>
         {book.has_cover && book.cover_url ? (
           <img
-            src={thumb(publicUrl(book.cover_url) ?? "")}
+            src={thumbUrl(publicUrl(book.cover_url) ?? "")}
             alt={book.title}
             className="w-full h-full object-cover group-hover:scale-[1.03] transition-transform duration-500"
             loading="lazy"
@@ -68,35 +62,7 @@ function BookCardImpl({ book, className }: Props) {
           </div>
         )}
 
-        {/* Upper-right cluster: format dots, then a 'read' check in the corner */}
-        {(isDual || isPhysicalOnly || isRead) && (
-          <div style={{position:"absolute",top:"6px",right:"6px",display:"flex",gap:"4px",alignItems:"center",zIndex:10}}>
-            {(isDual || isPhysicalOnly) && (
-              <div style={{display:"flex",gap:"3px",alignItems:"center"}}>
-                {isDual && (
-                  <div style={{
-                    width:"8px",height:"8px",borderRadius:"50%",
-                    background:"#4a9aba",
-                    boxShadow:"0 0 0 1px rgba(0,0,0,0.5), 0 0 4px rgba(74,154,186,0.8)",
-                  }} title="Also owned as digital" />
-                )}
-                <div style={{
-                  width:"8px",height:"8px",borderRadius:"50%",
-                  background:"#c9933a",
-                  boxShadow:"0 0 0 1px rgba(0,0,0,0.5), 0 0 4px rgba(201,147,58,0.8)",
-                }} title={book.physical_location ? `Physical · ${book.physical_location}` : "Physical copy"} />
-              </div>
-            )}
-            {isRead && (
-              <div title="Read"
-                style={{width:"17px",height:"17px",borderRadius:"50%",background:"var(--gold)",
-                        display:"flex",alignItems:"center",justifyContent:"center",
-                        boxShadow:"0 0 0 1px rgba(0,0,0,0.55)"}}>
-                <Check style={{width:"11px",height:"11px",color:"var(--ink)",strokeWidth:3.5}} />
-              </div>
-            )}
-          </div>
-        )}
+        <CoverBadges isDual={isDual} isNative={isNative} isRead={isRead} location={book.physical_location} />
 
         {/* Series name badge — bottom */}
         {book.series && (

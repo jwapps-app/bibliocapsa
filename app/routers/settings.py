@@ -23,9 +23,7 @@ def auto_enrich_enabled() -> bool:
     return (get_setting(AUTO_ENRICH_KEY) or "true").strip().lower() in ("1", "true", "yes")
 
 
-def _pg():
-    from ..pg_database import get_pg
-    return get_pg()
+from ..pg_database import get_pg as _pg
 
 
 # Settings change only when an admin edits them, but hot paths (read-status
@@ -80,11 +78,7 @@ def _mask(token: Optional[str]) -> Optional[str]:
     return f"{token[:4]}…{token[-4:]}"
 
 
-def _require_admin(request: Request):
-    from .. import auth
-    u = auth.authenticate_request(request)
-    if not u or u.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin only")
+from ..auth import require_admin as _require_admin
 
 
 class SettingsView(BaseModel):

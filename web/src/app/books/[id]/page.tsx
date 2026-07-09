@@ -1,4 +1,4 @@
-import { api } from "@/lib/api";
+import { api, publicUrl } from "@/lib/api";
 import { notFound } from "next/navigation";
 import { Download, Calendar, Building2, Hash, BookOpen, BookOpenText, Info } from "lucide-react";
 import { AddToShelf } from "@/components/AddToShelf";
@@ -45,7 +45,7 @@ export default async function BookPage({
           <div className="shrink-0 w-40 sm:w-44 mx-auto sm:mx-0">
             {book.has_cover && book.cover_url ? (
               <img
-                src={book.cover_url.replace(/^https?:\/\/[^/]+/, "")}
+                src={publicUrl(book.cover_url) ?? ""}
                 alt={book.title}
                 className="w-full rounded-sm cover-shadow border"
                 style={{borderColor:"var(--ink-muted)"}}
@@ -209,7 +209,7 @@ export default async function BookPage({
             {/* Description (sanitized — Calibre comments are arbitrary HTML) */}
             {book.comment && (
               <SafeHtml html={book.comment}
-                className="leading-relaxed prose prose-sm max-w-none"
+                className="leading-relaxed max-w-none"
                 style={{fontFamily:"var(--body)",fontSize:"1rem",color:"var(--parchment-dim)"}} />
             )}
 
@@ -251,5 +251,4 @@ function MetaItem({ icon, label }: { icon: React.ReactNode; label: string }) {
   );
 }
 
-export async function generateStaticParams() { return []; }
 export const dynamic = "force-dynamic";

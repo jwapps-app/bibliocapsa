@@ -18,7 +18,7 @@ services:
       CALIBRE_DB_PATH: /calibre/metadata.db
       CALIBRE_LIBRARY_PATH: /calibre
       CALIBRE_FTS_DB_PATH: /calibre/full-text-search.db
-      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-*}"
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-}"
       POSTGRES_HOST: db
       POSTGRES_PORT: 5432
       POSTGRES_USER: bibliocapsa
@@ -47,7 +47,7 @@ services:
     ports:
       - "${WEB_PORT:-3001}:3000"
     environment:
-      NEXT_PUBLIC_API_URL: "http://bibliocapsa:8000"
+      API_URL: "http://bibliocapsa:8000"
       NODE_ENV: production
     depends_on:
       bibliocapsa:

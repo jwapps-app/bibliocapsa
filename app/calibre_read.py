@@ -16,9 +16,7 @@ table above remains authoritative for Bibliocapsa.
 VALID = {"read", "reading"}
 
 
-def _pg():
-    from .pg_database import get_pg
-    return get_pg()
+from .pg_database import get_pg as _pg
 
 
 def get_status(book_id: int) -> dict:
@@ -54,7 +52,9 @@ def _status_from_calibre(book_id: int) -> dict:
         col_date = get_setting("reading_col_date")
         d = cur.get(col_date) if col_date else None
         return {"status": "read", "date_read": str(d)[:10] if d else None}
-    except Exception:
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).debug("calibre column status unavailable: %s", e)
         return {"status": None, "date_read": None}
 
 
@@ -107,7 +107,9 @@ def calibre_column_statuses(book_ids) -> dict:
                 for r in cal.execute(f"SELECT book, value FROM custom_column_{dcid} WHERE book IN ({ph})").fetchall():
                     dates[r["book"]] = str(r["value"])[:10] if r["value"] else None
             return {bid: {"status": "read", "date_read": dates.get(bid)} for bid in reads}
-    except Exception:
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).debug("calibre column statuses unavailable: %s", e)
         return {}
 
 

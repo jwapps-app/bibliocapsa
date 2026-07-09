@@ -1,5 +1,5 @@
 import { cookies } from "next/headers";
-import { api } from "@/lib/api";
+import { api, publicUrl } from "@/lib/api";
 import { Sidebar } from "@/components/Sidebar";
 import { SearchBar, FullTextSearchBar } from "@/components/SearchBar";
 import { InfiniteBooks } from "@/components/InfiniteBooks";
@@ -264,7 +264,7 @@ function SeriesView({ series, cols }: { series: any[]; cols: number }) {
             <div className="relative aspect-[2/3] w-full overflow-hidden rounded-sm cover-shadow group-hover:cover-shadow-hover transition-all duration-300 group-hover:-translate-y-1">
               {s.first_book_has_cover && s.first_book_cover_url ? (
                 <img
-                  src={s.first_book_cover_url.replace(/^https?:\/\/[^/]+/, "")}
+                  src={publicUrl(s.first_book_cover_url) ?? ""}
                   alt={s.name}
                   className="w-full h-full object-cover group-hover:scale-[1.03] transition-transform duration-500"
                   loading="lazy"

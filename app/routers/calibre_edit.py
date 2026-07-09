@@ -3,7 +3,7 @@ Calibre edit overlay endpoints.
 
 Edits to Calibre books are stored in PostgreSQL and merged over Calibre on read
 (see app/calibre_overlay.py). They accumulate as "pending" until a deliberate
-Sync to Calibre (Phase 2). Admin only — these affect the shared library.
+Sync to Calibre (POST /sync below). Admin only — these affect the shared library.
 """
 
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File
@@ -20,11 +20,7 @@ ALLOWED_UPLOAD_EXT = {"epub", "pdf", "mobi", "azw3", "azw", "fb2", "txt", "cbz",
 MAX_UPLOAD_BYTES = 300 * 1024 * 1024  # 300 MB
 
 
-def _require_admin(request: Request):
-    from .. import auth
-    u = auth.authenticate_request(request)
-    if not u or u.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin only")
+from ..auth import require_admin as _require_admin
 
 
 class CalibreEdit(BaseModel):

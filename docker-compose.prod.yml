@@ -53,7 +53,7 @@ services:
     # No published port: the web UI is served through the proxy on PROXY_PORT.
     # The proxy reaches it as `web:3000` on the internal network.
     environment:
-      NEXT_PUBLIC_API_URL: "http://bibliocapsa:8000"
+      API_URL: "http://bibliocapsa:8000"
       NODE_ENV: production
     depends_on:
       bibliocapsa:

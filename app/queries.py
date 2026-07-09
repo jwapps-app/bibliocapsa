@@ -162,9 +162,6 @@ def row_to_detail(conn: sqlite3.Connection, row: sqlite3.Row, base_url: str) -> 
     has_cover = bool(row["has_cover"])
     ownership = {"has_digital": True, "has_physical": False, "physical_location": None}
     try:
-        from .pg_database import get_database_url
-        import psycopg2
-        from psycopg2.extras import RealDictCursor
         from .pg_database import get_pg
         pg = get_pg()
         cur = pg.cursor()
@@ -176,8 +173,9 @@ def row_to_detail(conn: sqlite3.Connection, row: sqlite3.Row, base_url: str) -> 
         pg.close()
         if r:
             ownership = {"has_digital": r["has_digital"], "has_physical": r["has_physical"], "physical_location": r["physical_location"]}
-    except Exception:
-        pass
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).debug("ownership overlay unavailable: %s", e)
     return BookDetail(
         id=book_id,
         title=row["title"],

@@ -28,7 +28,6 @@ export interface NativeBook {
   page_count?: number; publisher?: string; published_date?: string;
   categories?: string[]; language?: string; format: string; location?: string;
   rating?: number; community_rating?: number | null; reading_status?: string | null; date_read?: string | null;
-  cover_variant?: number | null;
 }
 export interface NativeBookUpdate {
   title?: string;
@@ -52,15 +51,8 @@ export interface PaginatedBooks {
   total: number; page: number; page_size: number; pages: number; items: BookSummary[];
 }
 export interface SeriesSummary { id: number; name: string; book_count: number; first_book_id?: number; first_book_cover_url?: string; first_book_has_cover: boolean; }
-export interface SeriesDetail  { id: number; name: string; book_count: number; books: BookSummary[]; }
-export interface AuthorDetail  { id: number; name: string; sort?: string; book_count: number; books: BookSummary[]; }
 export interface TagDetail     { id: number; name: string; book_count: number; }
 export interface HealthResponse { status: string; calibre_db: string; book_count: number; version: string; }
-export interface SearchResult  {
-  book_id: number; title: string; authors: string[]; format: string;
-  excerpt: string; cover_url?: string; has_cover: boolean;
-}
-export interface SearchResponse { query: string; total: number; results: SearchResult[]; }
 export interface CurrentUser { id: number; name: string; username: string; email?: string; role: string; kindle_email?: string | null; theme?: string | null; font?: string | null; }
 export interface Loan {
   id: number; book_id: number; book_source: string;
@@ -85,6 +77,12 @@ async function get<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`, { cache: "no-store", headers, credentials: "same-origin" });
   if (!res.ok) throw new Error(`${res.status}: ${path}`);
   return res.json();
+}
+
+/** Cover URL at a grid-friendly width — the backend serves cached thumbnails
+ *  via ?w= (grid cells render ~150-250 px; 300 covers 2x DPR). */
+export function thumbUrl(url: string): string {
+  return url + (url.includes("?") ? "&" : "?") + "w=300";
 }
 
 export function publicUrl(url: string | undefined): string | undefined {
@@ -148,8 +146,6 @@ export const api = {
   },
   // Digital (Calibre) read/unread status — Bibliocapsa's own store (+ optional
   // write-back to a mapped Calibre column).
-  getCalibreReadStatus: (id: number) =>
-    get<{ status: string | null; date_read: string | null }>(`/api/calibre/read-status/${id}`),
   setCalibreReadStatus: async (id: number, body: { status: string | null; date_read?: string | null }):
     Promise<{ status: string | null; date_read: string | null }> => {
     const res = await fetch(`/api/calibre/read-status/${id}`, {
@@ -276,12 +272,10 @@ export const api = {
     const qs = new URLSearchParams(Object.entries(p).filter(([,v])=>v!==undefined).map(([k,v])=>[k,String(v)])).toString();
     return get<Author[]>(`/api/authors${qs?`?${qs}`:""}`);
   },
-  author:       (id: number)        => get<AuthorDetail>(`/api/authors/${id}`),
   series:       (p: Record<string,string|number|undefined>={}) => {
     const qs = new URLSearchParams(Object.entries(p).filter(([,v])=>v!==undefined).map(([k,v])=>[k,String(v)])).toString();
     return get<SeriesSummary[]>(`/api/series${qs?`?${qs}`:""}`);
   },
-  seriesDetail: (id: number)        => get<SeriesDetail>(`/api/series/${id}`),
   seriesNextIndex: async (name: string): Promise<number> => {
     const res = await fetch(`/api/series/next-index?name=${encodeURIComponent(name)}`);
     return res.ok ? (await res.json()).next_index : 1;
@@ -289,8 +283,6 @@ export const api = {
   tags:         ()                  => get<TagDetail[]>("/api/tags?page_size=5000"),
   publishers:   ()                  => get<{ name: string; book_count: number }[]>("/api/publishers"),
   kindleInfo:   ()                  => get<{ sender: string | null; configured: boolean }>("/api/settings/kindle-info"),
-  search:       (q: string, limit=20) => get<SearchResponse>(`/api/search?q=${encodeURIComponent(q)}&limit=${limit}`),
-  fileUrl:      (id: number, fmt: string) => `/api/books/${id}/file/${fmt.toLowerCase()}`,
 
   // ── Reading progress (browser reader ↔ KOReader sync) ──
   bookProgress: async (id: number, format = "epub"): Promise<{

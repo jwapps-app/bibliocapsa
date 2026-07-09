@@ -19,17 +19,7 @@ OPDS_TYPE = "application/atom+xml;profile=opds-catalog;kind=navigation"
 OPDS_ACQUISITION = "application/atom+xml;profile=opds-catalog;kind=acquisition"
 
 # Formats e-readers can open, in rough order of preference.
-MIME_TYPES = {
-    "EPUB": "application/epub+zip",
-    "PDF":  "application/pdf",
-    "MOBI": "application/x-mobipocket-ebook",
-    "AZW3": "application/vnd.amazon.ebook",
-    "AZW":  "application/vnd.amazon.ebook",
-    "FB2":  "application/x-fictionbook+xml",
-    "TXT":  "text/plain",
-    "CBZ":  "application/x-cbz",
-    "DJVU": "image/vnd.djvu",
-}
+from .files import MIME_TYPES  # one shared format→MIME map
 
 
 def _xml(content: str) -> Response:
