@@ -60,6 +60,15 @@ def _rate_ok(key: str, limit: int, window: int = 300) -> bool:
 from ..pg_database import get_pg as _pg
 
 
+def _is_local_client(request: Request) -> bool:
+    import ipaddress
+    try:
+        a = ipaddress.ip_address(auth.client_ip(request))
+        return a.is_private or a.is_loopback or a.is_link_local
+    except ValueError:
+        return False
+
+
 def _account_count() -> int:
     conn = _pg()
     try:
@@ -157,8 +166,16 @@ def register(body: RegisterBody, request: Request, response: Response):
         # internet-exposed fresh instance can't be hijacked by a stranger who
         # reaches /register before the owner does.
         required = os.getenv("SETUP_TOKEN")
-        if required and not hmac.compare_digest(body.setup_token or "", required):
-            raise HTTPException(status_code=403, detail="A valid setup token is required to create the first account")
+        if required:
+            if not hmac.compare_digest(body.setup_token or "", required):
+                raise HTTPException(status_code=403, detail="A valid setup token is required to create the first account")
+        elif not _is_local_client(request):
+            # No token configured: allow the first admin ONLY from the local
+            # network, never from a request that arrived over the public internet
+            # (Cloudflare/proxy sets a public CF-Connecting-IP / X-Forwarded-For).
+            # Closes the "stranger registers first on an exposed instance" hole
+            # while keeping the documented LAN-first setup frictionless.
+            raise HTTPException(status_code=403, detail="Create the first account from the local network, or set SETUP_TOKEN to allow remote setup.")
     if not bootstrap:
         requester = auth.authenticate_request(request)
         if not requester or requester.get("role") != "admin":
@@ -206,7 +223,7 @@ def register(body: RegisterBody, request: Request, response: Response):
 
 @router.post("/login", summary="Log in")
 def login(body: LoginBody, request: Request, response: Response):
-    ip = request.client.host if request.client else "?"
+    ip = auth.client_ip(request)
     uname = body.username.strip().lower()
     if not _rate_ok(f"u:{uname}", 10) or not _rate_ok(f"ip:{ip}", 40):
         raise HTTPException(status_code=429, detail="Too many login attempts. Please wait a few minutes and try again.")

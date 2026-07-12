@@ -18,6 +18,7 @@ import hashlib
 import hmac
 import os
 import secrets
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -75,6 +76,47 @@ def verify_password(plaintext: str, stored: Optional[str]) -> bool:
         return ok
     except Exception:
         return False
+
+
+def client_ip(request) -> str:
+    """Real client IP behind the trusted proxy/tunnel. Cloudflare sets
+    CF-Connecting-IP; a reverse proxy sets X-Forwarded-For. The socket peer is
+    just the proxy, so keying rate limits / bootstrap checks on it is useless."""
+    h = request.headers
+    cf = h.get("cf-connecting-ip")
+    if cf:
+        return cf.strip()
+    xff = h.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if getattr(request, "client", None) else "?"
+
+
+# Failed HTTP-Basic credential throttle. OPDS/API devices resend Basic creds on
+# EVERY request, so counting all attempts would lock out legitimate devices —
+# we count only FAILURES. Correct creds are never counted (a real device is
+# never throttled); a password sprayer sending wrong passwords across usernames
+# is. Closes the gap where the /login limiter didn't cover the Basic path.
+_basic_fail: dict = {}
+_BASIC_FAIL_WINDOW = 300
+_BASIC_FAIL_MAX = 20
+
+
+def _basic_throttled(key: str) -> bool:
+    now = time.time()
+    b = [t for t in _basic_fail.get(key, []) if now - t < _BASIC_FAIL_WINDOW]
+    _basic_fail[key] = b
+    return len(b) >= _BASIC_FAIL_MAX
+
+
+def _note_basic_failure(key: str) -> None:
+    now = time.time()
+    b = [t for t in _basic_fail.get(key, []) if now - t < _BASIC_FAIL_WINDOW]
+    b.append(now)
+    _basic_fail[key] = b
+    if len(_basic_fail) > 5000:  # crude cap so the dict can't grow unbounded
+        for k in [k for k, v in _basic_fail.items() if not v or now - v[-1] > _BASIC_FAIL_WINDOW]:
+            _basic_fail.pop(k, None)
 
 
 def _kosync_secret() -> bytes:
@@ -145,6 +187,13 @@ def _user_from_session(token: str) -> Optional[dict]:
         conn.close()
 
 
+# A throwaway hash used to spend one PBKDF2 when the username doesn't exist, so
+# response time can't distinguish "no such user" from "wrong password". Computed
+# once at import; the decoy never matches, so it's never cached and always costs
+# the full KDF.
+_DECOY_HASH = hash_password(secrets.token_hex(16))
+
+
 def _user_by_credentials(username: str, password: str) -> Optional[dict]:
     conn = _pg()
     try:
@@ -156,9 +205,12 @@ def _user_by_credentials(username: str, password: str) -> Optional[dict]:
         row = cur.fetchone()
     finally:
         conn.close()
-    if row and verify_password(password, row.get("password_hash")):
-        row.pop("password_hash", None)
-        return row
+    if row:
+        if verify_password(password, row.get("password_hash")):
+            row.pop("password_hash", None)
+            return row
+        return None
+    verify_password(password, _DECOY_HASH)  # equalize timing (no user-enumeration oracle)
     return None
 
 
@@ -188,9 +240,17 @@ def authenticate_request(request) -> Optional[dict]:
         try:
             decoded = base64.b64decode(authz[6:].strip()).decode()
             username, _, password = decoded.partition(":")
-            return _user_by_credentials(username, password)
         except Exception:
             return None
+        # Throttle failed Basic attempts (password spraying via any /api or /opds
+        # endpoint, which bypasses the /login limiter). Correct creds never count.
+        fkey = f"{username.lower()}|{client_ip(request)}"
+        if _basic_throttled(fkey):
+            return None
+        user = _user_by_credentials(username, password)
+        if not user:
+            _note_basic_failure(fkey)
+        return user
 
     return None
 

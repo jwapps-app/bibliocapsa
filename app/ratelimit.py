@@ -28,5 +28,6 @@ def client_key(request: Request, name: str) -> str:
     user = getattr(request.state, "user", None)
     who = (user or {}).get("id") if user else None
     if who is None:
-        who = request.client.host if request.client else "?"
+        from . import auth
+        who = auth.client_ip(request)
     return f"{name}:{who}"

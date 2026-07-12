@@ -175,4 +175,6 @@ def smtp_test(body: TestEmail, request: Request):
         )
         return {"ok": True}
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Send failed: {e}")
+        import logging
+        logging.getLogger(__name__).warning("smtp test failed: %s", e)
+        raise HTTPException(status_code=400, detail="Test email failed to send. Check the SMTP settings and try again.")

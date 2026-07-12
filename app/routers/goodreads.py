@@ -495,7 +495,12 @@ def undo_import(request: Request):
 
 
 @router.get("/ownership/{book_id}", summary="Get ownership info for a Calibre book")
-def get_ownership(book_id: int):
+def get_ownership(book_id: int, request: Request):
+    from .. import access
+    from ..database import get_conn
+    with get_conn() as _cal:
+        if not access.is_calibre_book_allowed(_cal, book_id, access.restriction_for_request(request)):
+            raise HTTPException(status_code=404, detail="Not found")
     try:
         pg = _pg()
         cur = pg.cursor()
@@ -546,7 +551,13 @@ def set_ownership(book_id: int, body: OwnershipUpdate, request: Request):
 
 
 @router.get("/ratings/{book_id}", summary="Get Goodreads rating for a book")
-def get_rating(book_id: int, book_source: str = "calibre"):
+def get_rating(book_id: int, request: Request, book_source: str = "calibre"):
+    if book_source == "calibre":
+        from .. import access
+        from ..database import get_conn
+        with get_conn() as _cal:
+            if not access.is_calibre_book_allowed(_cal, book_id, access.restriction_for_request(request)):
+                raise HTTPException(status_code=404, detail="Not found")
     try:
         pg = _pg()
         cur = pg.cursor()

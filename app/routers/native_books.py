@@ -541,6 +541,7 @@ def get_native_cover(book_id: int, request: Request):
             if os.path.exists(tpath):
                 with open(tpath) as tf:
                     content_type = tf.read().strip() or "image/jpeg"
+            content_type = _safe_image_ct(content_type)
             return Response(content=blob, media_type=content_type,
                             headers={"Cache-Control": "public, max-age=2592000"})
         except Exception:
@@ -566,12 +567,23 @@ def get_native_cover(book_id: int, request: Request):
         if downloaded:
             blob, content_type = downloaded
             _cache_cover(book_id, blob, content_type)
-            return Response(content=blob, media_type=content_type,
+            return Response(content=blob, media_type=_safe_image_ct(content_type),
                             headers={"Cache-Control": "public, max-age=2592000"})
         # fall through to a generated cover if the external fetch fails
 
     # No real cover — serve a Calibre-style generated cover (title + author).
     return _generated_cover(row.get("title"), row.get("author"), row.get("cover_variant"))
+
+
+# A proxied/remote cover URL is admin-set; never re-serve it with an
+# attacker-influenced Content-Type. Clamp to a raster allowlist so a scripted
+# SVG (or text/html) opened as a top-level navigation can't execute in-origin.
+# (Our own generated cover below is trusted, html-escaped SVG — not clamped.)
+_SAFE_IMAGE_CT = {"image/jpeg", "image/png", "image/webp", "image/gif", "image/avif"}
+
+
+def _safe_image_ct(ct: str) -> str:
+    return ct if (ct or "").split(";")[0].strip().lower() in _SAFE_IMAGE_CT else "image/jpeg"
 
 
 def _generated_cover(title, author, variant) -> Response:

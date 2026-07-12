@@ -177,6 +177,20 @@ def init_postgres():
                 PRIMARY KEY (book_id, book_source)
             );
 
+            -- Goodreads ratings/reviews. Read by the (member-facing) ratings
+            -- endpoint, so it must exist even before any Goodreads import has run
+            -- (the import also self-heals it) — otherwise the endpoint 503s.
+            CREATE TABLE IF NOT EXISTS book_ratings (
+                id          SERIAL PRIMARY KEY,
+                book_id     INTEGER NOT NULL,
+                book_source TEXT NOT NULL DEFAULT 'calibre',
+                source      TEXT NOT NULL DEFAULT 'goodreads',
+                rating      INTEGER,
+                review      TEXT,
+                date_read   TEXT,
+                UNIQUE(book_id, book_source, source)
+            );
+
             CREATE TABLE IF NOT EXISTS lending (
                 id              SERIAL PRIMARY KEY,
                 book_id         INTEGER NOT NULL,

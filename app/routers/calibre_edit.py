@@ -89,7 +89,11 @@ class ReadStatus(BaseModel):
 
 @router.get("/read-status/{book_id}", summary="Get a Calibre book's read/unread status")
 def get_read_status(book_id: int, request: Request):
-    from .. import calibre_read
+    from .. import calibre_read, access
+    from ..database import get_conn
+    with get_conn() as conn:
+        if not access.is_calibre_book_allowed(conn, book_id, access.restriction_for_request(request)):
+            raise HTTPException(status_code=404, detail="Not found")
     return calibre_read.get_status(book_id)
 
 

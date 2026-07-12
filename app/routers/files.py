@@ -71,7 +71,9 @@ def send_to_kindle(book_id: int, request: Request):
             attachment_mime=MIME_TYPES.get(pref, "application/octet-stream"),
         )
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Send failed: {e}")
+        import logging
+        logging.getLogger(__name__).warning("send-to-kindle failed: %s", e)
+        raise HTTPException(status_code=400, detail="Could not send the book. Check the Send-to-Kindle email and SMTP settings.")
     return {"ok": True, "sent_to": to, "format": pref}
 
 
