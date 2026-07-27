@@ -16,7 +16,7 @@ from .database import init_db, close_db
 from .routers import books, authors, series, tags, covers, sync, opds, health, publishers
 from .routers import search, files, native_books, lending, reading, shelves, goodreads, settings, kosync
 from .routers import auth as auth_router
-from .routers import calibre_edit, webdav, stats, wishlist
+from .routers import calibre_edit, webdav, stats, wishlist, views
 from . import auth as auth_lib
 
 logging.basicConfig(level=logging.INFO)
@@ -165,6 +165,7 @@ app.include_router(auth_router.router,   prefix="/api/auth",          tags=["Aut
 app.include_router(calibre_edit.router,  prefix="/api/calibre",       tags=["Calibre Edits"])
 app.include_router(stats.router,         prefix="/api/stats",         tags=["Reading Statistics"])
 app.include_router(wishlist.router,      prefix="/api/wishlist",      tags=["Want to Read"])
+app.include_router(views.router,         prefix="/api/views",         tags=["Saved Views"])
 
 # ── KOReader sync server (KOSync protocol) ──────────────────────────────────
 # Mounted at ROOT (no prefix) so devices can use the same base URL as the app.

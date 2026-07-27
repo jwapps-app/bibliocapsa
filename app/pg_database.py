@@ -398,6 +398,20 @@ def init_postgres():
             ALTER TABLE wishlist ADD COLUMN IF NOT EXISTS book_source TEXT;
             CREATE INDEX IF NOT EXISTS idx_wishlist_user ON wishlist(user_id, added_at DESC);
 
+            -- Per-user saved library views: a named bundle of filters + sort +
+            -- layout. Shared by the web app and iOS, so `config` is stored as
+            -- client-agnostic JSON keyed by NAME (not Calibre ids), letting the
+            -- local-first iOS catalog resolve the same view offline.
+            CREATE TABLE IF NOT EXISTS saved_views (
+                id         SERIAL PRIMARY KEY,
+                user_id    INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                name       TEXT NOT NULL,
+                config     JSONB NOT NULL,
+                position   INTEGER DEFAULT 0,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS idx_saved_views_user ON saved_views(user_id, position, id);
+
             -- Indexes
             CREATE INDEX IF NOT EXISTS idx_native_books_isbn ON native_books(isbn);
             CREATE INDEX IF NOT EXISTS idx_native_books_enrich ON native_books(enrich_status);
