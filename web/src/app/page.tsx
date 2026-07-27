@@ -9,6 +9,7 @@ import { ShelfGrid } from "@/components/ShelfGrid";
 import { ReadFilter } from "@/components/ReadFilter";
 import { SyncButton } from "@/components/SyncButton";
 import { LendingView } from "@/components/LendingView";
+import { SaveViewButton } from "@/components/SaveViewButton";
 import { colsClass } from "@/lib/grid";
 import { Search, Layers, Type, User, CalendarPlus, CalendarCheck, Calendar, ArrowUpDown, ArrowUp, ArrowDown, Combine } from "lucide-react";
 import Link from "next/link";
@@ -123,6 +124,18 @@ export default async function HomePage({ searchParams: searchParamsPromise }: Pa
 
   const activeFilter = searchParams.series_id || searchParams.author_id || searchParams.tag_id || searchParams.search || searchParams.custom || searchParams.read;
 
+  // Display name for the active series/author/tag, read off the first result.
+  // Saved views are stored by NAME (not Calibre id) so the iOS app - which
+  // mirrors the catalog locally and has no Calibre ids - can resolve them too.
+  const first = books?.items?.[0];
+  const activeFilterName = searchParams.series_id
+    ? first?.series?.name
+    : searchParams.author_id
+      ? first?.authors?.find(a => String(a.id) === searchParams.author_id)?.name
+      : searchParams.tag_id
+        ? first?.tags?.find(t => String(t.id) === searchParams.tag_id)?.name
+        : undefined;
+
   return (
     <div className="flex h-screen overflow-hidden w-full max-w-full">
       <LibraryUrlRecorder />
@@ -166,6 +179,7 @@ export default async function HomePage({ searchParams: searchParamsPromise }: Pa
                     <FormatFilter searchParams={searchParams} />
                     <ReadFilter searchParams={searchParams} />
                     <SortRow searchParams={searchParams} activeSort={activeSort} activeDir={activeDir} sortOptions={sortOptions} />
+                    <SaveViewButton params={searchParams} activeFilterName={activeFilterName} />
                   </div>
                 </div>
 
@@ -188,6 +202,7 @@ export default async function HomePage({ searchParams: searchParamsPromise }: Pa
                       <Combine className="w-5 h-5" />
                     </Link>
                     <SortRow searchParams={searchParams} activeSort={activeSort} activeDir={activeDir} sortOptions={sortOptions} />
+                    <SaveViewButton params={searchParams} activeFilterName={activeFilterName} />
                   </div>
                 </div>
               </div>

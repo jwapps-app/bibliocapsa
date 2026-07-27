@@ -53,6 +53,19 @@ export interface PaginatedBooks {
 export interface SeriesSummary { id: number; name: string; book_count: number; first_book_id?: number; first_book_cover_url?: string; first_book_has_cover: boolean; }
 export interface TagDetail     { id: number; name: string; book_count: number; }
 export interface HealthResponse { status: string; calibre_db: string; book_count: number; version: string; }
+/** A saved view's filters, keyed by NAME so the iOS app can resolve it offline.
+ *  Clients ignore fields they don't support rather than failing. */
+export interface SavedViewConfig {
+  status?: "unread" | "reading" | "read" | null;
+  format?: "all" | "physical" | "digital";
+  filter?: { type: "series" | "author" | "tag"; value: string } | null;
+  search?: string | null;
+  sort_by?: string;
+  sort_dir?: "asc" | "desc";
+  collapse_series?: boolean;
+  layout?: "grid" | "list";
+}
+export interface SavedView { id: number; name: string; config: SavedViewConfig; position: number; }
 export interface CurrentUser { id: number; name: string; username: string; email?: string; role: string; kindle_email?: string | null; theme?: string | null; font?: string | null; }
 export interface Loan {
   id: number; book_id: number; book_source: string;
@@ -183,6 +196,18 @@ export const api = {
     return res.json();
   },
   removeWishlist: async (id: number): Promise<void> => { await fetch(`/api/wishlist/${id}`, { method: "DELETE" }); },
+  // Saved views: a named bundle of filters + sort + layout, shared with the iOS
+  // app. `config` is keyed by NAME (not Calibre ids) so both clients resolve it.
+  savedViews: () => get<SavedView[]>("/api/views"),
+  saveView: async (name: string, config: SavedViewConfig): Promise<{ id: number; updated: boolean }> => {
+    const res = await fetch("/api/views", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, config }),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail ?? "Could not save view");
+    return res.json();
+  },
+  deleteView: async (id: number): Promise<void> => { await fetch(`/api/views/${id}`, { method: "DELETE" }); },
   wishlistContains: (bookId: number, bookSource = "calibre") => get<{ bookmarked: boolean; id: number | null }>(`/api/wishlist/contains?book_id=${bookId}&book_source=${bookSource}`),
   setGoal: async (year: number, target: number): Promise<{ year: number; target: number | null; count: number }> => {
     const res = await fetch("/api/stats/goal", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ year, target }) });

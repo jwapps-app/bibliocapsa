@@ -2,7 +2,8 @@
 import { useState, useEffect } from "react";
 import { Grid, Layers, Users, Tag, ChevronLeft, ChevronRight, ArrowLeftRight, Plus, Sparkles, Settings, Menu, X, LogOut, BarChart3, Bookmark } from "lucide-react";
 import clsx from "clsx";
-import { api, type CurrentUser } from "@/lib/api";
+import { api, type CurrentUser, type SavedView } from "@/lib/api";
+import { configToHref, describeConfig } from "@/lib/savedViews";
 import { ThemePicker } from "@/components/ThemePicker";
 import { BookLogo } from "@/components/BookLogo";
 import Link from "next/link";
@@ -22,6 +23,7 @@ export function Sidebar({ currentParams, bookCount }: SidebarProps) {
   const [newShelfName, setNewShelfName] = useState("");
   const [user, setUser] = useState<CurrentUser | null>(null);
   const [counts, setCounts] = useState<Record<string, number>>({});
+  const [savedViews, setSavedViews] = useState<SavedView[]>([]);
   const activeView = currentParams.view;
   const activeShelf = currentParams.shelf ? Number(currentParams.shelf) : null;
 
@@ -32,7 +34,22 @@ export function Sidebar({ currentParams, bookCount }: SidebarProps) {
       .catch(() => {});
     api.me().then(setUser).catch(() => {});
     fetch("/api/counts").then(r => (r.ok ? r.json() : {})).then(d => setCounts(d || {})).catch(() => {});
+    api.savedViews().then(setSavedViews).catch(() => {});
   }, []);
+
+  // Saved views refresh when one is added elsewhere on the page (the Save
+  // control in the library header dispatches this).
+  useEffect(() => {
+    const reload = () => { api.savedViews().then(setSavedViews).catch(() => {}); };
+    window.addEventListener("saved-views-changed", reload);
+    return () => window.removeEventListener("saved-views-changed", reload);
+  }, []);
+
+  const deleteView = async (id: number) => {
+    if (!confirm("Delete this saved view?")) return;
+    await api.deleteView(id);
+    setSavedViews(prev => prev.filter(v => v.id !== id));
+  };
 
   const logout = async () => {
     await api.logout();
@@ -114,6 +131,33 @@ export function Sidebar({ currentParams, bookCount }: SidebarProps) {
       {/* Shelves */}
       {!collapsed && (
         <div className="flex-1 overflow-y-auto px-2 pb-4 mt-2 space-y-4">
+          {savedViews.length > 0 && (
+            <div>
+              <div className="flex items-center gap-1.5 px-3 mb-1"
+                style={{ fontFamily: "var(--mono)", fontSize: "0.6rem", color: "var(--parchment-dim)", opacity: 0.45, textTransform: "uppercase", letterSpacing: "0.1em" }}>
+                <Bookmark className="w-3 h-3" />
+                Saved Views
+              </div>
+              {savedViews.map(v => (
+                <div key={v.id} className="group flex items-center gap-1 pr-1 rounded-sm"
+                     style={{ background: "transparent" }}>
+                  <Link href={configToHref(v.config)} onClick={onNavigate}
+                    title={describeConfig(v.config)}
+                    className="flex-1 min-w-0 px-3 py-1.5 rounded-sm transition-all"
+                    style={{ color: "var(--parchment)", opacity: 0.8, fontFamily: "var(--body)", fontSize: "0.875rem" }}>
+                    <span className="truncate block">{v.name}</span>
+                  </Link>
+                  <button onClick={() => deleteView(v.id)}
+                    className="opacity-0 group-hover:opacity-60 transition-opacity shrink-0"
+                    style={{ color: "var(--parchment-dim)" }}
+                    title="Delete saved view" aria-label={`Delete saved view ${v.name}`}>
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
           {smartShelves.length > 0 && (
             <div>
               <div className="flex items-center gap-1.5 px-3 mb-1"
