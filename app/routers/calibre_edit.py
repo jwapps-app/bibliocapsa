@@ -234,7 +234,17 @@ def _queue_reading_updates(username, user_id) -> dict:
 
     queued = 0
     with get_conn() as cal:
+        # Only books still in Calibre — an orphaned document_map (from a deleted
+        # book) would otherwise queue a progress edit that can never sync and
+        # reappears as a permanent failure on every Sync.
+        existing = set()
+        if best:
+            ph = ",".join("?" * len(best))
+            existing = {r["id"] for r in cal.execute(
+                f"SELECT id FROM books WHERE id IN ({ph})", list(best)).fetchall()}
         for bid, (pct, ts) in best.items():
+            if bid not in existing:
+                continue
             frac = pct if pct <= 1 else pct / 100.0
             pct100 = max(0, min(100, round(frac * 100)))
             read = frac >= 0.99

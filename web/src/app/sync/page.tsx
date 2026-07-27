@@ -42,10 +42,15 @@ export default function SyncPage() {
       setConfirming(false);
       const failed = r.failed?.length ?? 0;
       const added = (r as any).added ?? 0;
+      const dropped = (r as any).dropped ?? 0;
       const parts = [];
       if (r.synced) parts.push(`updated ${r.synced}`);
       if (added) parts.push(`added ${added}`);
-      setResult(`${parts.join(", ") || "Nothing"} in Calibre${failed ? ` · ${failed} failed` : ""}.`);
+      const tail = [
+        dropped ? `${dropped} cleared (no longer in Calibre)` : "",
+        failed ? `${failed} failed` : "",
+      ].filter(Boolean).join(" · ");
+      setResult(`${parts.join(", ") || "Nothing"} in Calibre${tail ? ` · ${tail}` : ""}.`);
       load();
     } catch (e: any) {
       setResult(e.message ?? "Sync failed");

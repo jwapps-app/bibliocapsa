@@ -97,6 +97,29 @@ def _valid_custom_labels(library: str) -> Optional[set]:
         return None
 
 
+def _existing_book_ids(ids, library: str) -> set:
+    """Which of `ids` still exist in the target library. If the DB is unreadable,
+    assume all exist (don't drop anything — let the normal sync attempt run)."""
+    ids = [int(i) for i in ids]
+    if not ids:
+        return set()
+    import sqlite3
+    db = os.path.join(library, "metadata.db")
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        try:
+            out = set()
+            for i in range(0, len(ids), 500):
+                chunk = ids[i:i + 500]
+                ph = ",".join("?" * len(chunk))
+                out |= {r[0] for r in conn.execute(f"SELECT id FROM books WHERE id IN ({ph})", chunk).fetchall()}
+            return out
+        finally:
+            conn.close()
+    except Exception:
+        return set(ids)
+
+
 def _format_custom(val) -> str:
     if val is None:
         return ""
@@ -169,16 +192,28 @@ def run_sync(library: str = LIBRARY) -> dict:
     """Apply all pending edits AND import all pending uploads. Successful items
     are cleared from the overlay/upload queue."""
     from . import calibre_overlay as overlay
-    synced, added, failed = 0, 0, []
+    synced, added, dropped, failed = 0, 0, 0, []
 
-    for item in overlay.pending():
-        ok, out = sync_book(item["book_id"], item["fields"], library)
+    items = overlay.pending()
+    existing = _existing_book_ids([it["book_id"] for it in items], library)
+    for item in items:
+        bid = item["book_id"]
+        if bid not in existing:
+            # The book was removed from Calibre — its edit can never apply, so
+            # drop it instead of failing forever. Clears orphaned edits (e.g. a
+            # reading-progress edit from a deleted/never-synced book) that would
+            # otherwise reappear as a permanent "1 failed" on every sync.
+            overlay.discard(bid)
+            dropped += 1
+            logger.info("Dropped pending edit for book %s (no longer in Calibre)", bid)
+            continue
+        ok, out = sync_book(bid, item["fields"], library)
         if ok:
-            overlay.discard(item["book_id"])
+            overlay.discard(bid)
             synced += 1
         else:
-            logger.warning("Calibre sync failed for book %s: %s", item["book_id"], out)
-            failed.append({"book_id": item["book_id"], "error": out})
+            logger.warning("Calibre sync failed for book %s: %s", bid, out)
+            failed.append({"book_id": bid, "error": out})
 
     for up in overlay.list_uploads():
         ok, out = add_upload_to_calibre(up, library)
@@ -189,4 +224,4 @@ def run_sync(library: str = LIBRARY) -> dict:
             logger.warning("Calibre add failed for upload %s: %s", up["id"], out)
             failed.append({"upload_id": up["id"], "error": out})
 
-    return {"synced": synced, "added": added, "failed": failed, "remaining": len(failed)}
+    return {"synced": synced, "added": added, "dropped": dropped, "failed": failed, "remaining": len(failed)}
