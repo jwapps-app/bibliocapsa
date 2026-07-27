@@ -520,7 +520,7 @@ export default function SettingsPage() {
                       {accessEdit?.id === a.id ? (
                         <div className="flex gap-1.5">
                           <input className="bc-input flex-1" list="genre-options" autoFocus
-                            placeholder="Comma-separated genres (blank = full library)"
+                            placeholder="Comma-separated tags (blank = full library)"
                             value={accessEdit.text}
                             onChange={e => setAccessEdit({ id: a.id, text: e.target.value })}
                             onKeyDown={e => { if (e.key === "Enter") saveAccess(a.id, accessEdit.text); if (e.key === "Escape") setAccessEdit(null); }} />
@@ -583,7 +583,7 @@ export default function SettingsPage() {
             </div>
             {nu.role === "member" && (
               <input className="bc-input mt-2" list="genre-options"
-                     placeholder="Allowed genres, comma-separated (leave blank for full library)"
+                     placeholder="Allowed tags, comma-separated (leave blank for full library)"
                      value={nu.genres} onChange={e => setNu({ ...nu, genres: e.target.value })} />
             )}
             <div className="flex items-center gap-3 mt-3">

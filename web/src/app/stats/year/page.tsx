@@ -132,7 +132,7 @@ export default function YearReviewPage() {
             {/* Top genres */}
             {data.top_genres.length > 0 && (
               <div>
-                <SectionLabel>Top genres</SectionLabel>
+                <SectionLabel>Top tags</SectionLabel>
                 <div className="flex flex-wrap gap-2">
                   {data.top_genres.map(g => (
                     <a key={g.name} href={g.id ? `/?tag_id=${g.id}` : undefined}

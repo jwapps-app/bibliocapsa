@@ -323,7 +323,7 @@ function AuthorsView({ authors }: { authors: any[] }) {
 function TagsView({ tags }: { tags: any[] }) {
   return (
     <div>
-      <SectionTitle title="Genres" count={tags.length} />
+      <SectionTitle title="Tags" count={tags.length} />
       <div className="flex flex-wrap gap-2">
         {[...tags].sort((a,b)=>b.book_count-a.book_count).map((t:any) => (
           <Link key={t.id} href={`/?tag_id=${t.id}`} className="tag-pill">

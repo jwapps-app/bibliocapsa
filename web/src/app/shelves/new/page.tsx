@@ -31,7 +31,7 @@ export default function NewSmartShelfPage() {
 
   useEffect(() => {
     const base: FieldDef[] = [
-      { key: "tag", label: "Genre", type: "text" },
+      { key: "tag", label: "Tag", type: "text" },
       { key: "author", label: "Author", type: "text" },
       { key: "series", label: "Series", type: "text" },
       { key: "publisher", label: "Publisher", type: "text" },
@@ -102,7 +102,7 @@ export default function NewSmartShelfPage() {
           <h1 style={{ fontFamily: "var(--serif)", fontSize: "2rem", color: "var(--parchment)" }}>New smart shelf</h1>
         </div>
         <p className="mb-6" style={{ fontFamily: "var(--body)", fontSize: "0.95rem", color: "var(--parchment-dim)", opacity: 0.75 }}>
-          A self-updating shelf built from rules — genres, ratings, series, or any Calibre custom column.
+          A self-updating shelf built from rules - tags, ratings, series, or any Calibre custom column.
         </p>
 
         <label className="block mb-4">

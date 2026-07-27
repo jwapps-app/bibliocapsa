@@ -68,7 +68,7 @@ export function Sidebar({ currentParams, bookCount }: SidebarProps) {
     { href: "/",              label: "Library",   view: undefined,  Icon: Grid,          countKey: "books" },
     { href: "/?view=series",  label: "Series",    view: "series",   Icon: Layers,        countKey: "series" },
     { href: "/?view=authors", label: "Authors",   view: "authors",  Icon: Users,         countKey: "authors" },
-    { href: "/?view=tags",    label: "Genres",    view: "tags",     Icon: Tag,           countKey: "genres" },
+    { href: "/?view=tags",    label: "Tags",      view: "tags",     Icon: Tag,           countKey: "genres" },
     { href: "/?view=lending", label: "Lending",   view: "lending",  Icon: ArrowLeftRight, countKey: "lending" },
     { href: "/wishlist",      label: "Want to Read", view: undefined, Icon: Bookmark,    countKey: "wishlist" },
     { href: "/stats",         label: "Statistics", view: undefined, Icon: BarChart3,     countKey: undefined },
