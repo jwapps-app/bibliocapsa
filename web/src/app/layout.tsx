@@ -1,14 +1,26 @@
 import type { Metadata, Viewport } from "next";
-import { Playfair_Display, Crimson_Pro, Inter, JetBrains_Mono } from "next/font/google";
+import localFont from "next/font/local";
 import "./globals.css";
 
-// Self-hosted fonts (downloaded at build time, served from /_next/static).
-// The old Google Fonts @import was blocked by our CSP (style-src 'self'), so
-// the intended typography never actually loaded through the proxy.
-const playfair = Playfair_Display({ subsets: ["latin"], style: ["normal", "italic"], variable: "--font-playfair" });
-const crimson  = Crimson_Pro({ subsets: ["latin"], style: ["normal", "italic"], variable: "--font-crimson" });
-const inter    = Inter({ subsets: ["latin"], variable: "--font-inter" });
-const jbmono   = JetBrains_Mono({ subsets: ["latin"], variable: "--font-jbmono" });
+// Fonts are VENDORED (./fonts/*.woff2, latin subset, variable weight) and served
+// from /_next/static. They used to come from `next/font/google`, which downloads
+// them during `next build` - that made the image build depend on network access,
+// and it timed out under QEMU-emulated arm64 whenever a dependency change
+// invalidated the layer cache. Vendoring keeps builds offline and reproducible.
+// All four families are SIL Open Font License 1.1 (see fonts/OFL.txt).
+// To refresh: re-download the latin woff2 from Google Fonts into ./fonts.
+const playfair = localFont({
+  src: [{ path: "./fonts/playfair.woff2", style: "normal" },
+        { path: "./fonts/playfair-italic.woff2", style: "italic" }],
+  weight: "400 900", display: "swap", variable: "--font-playfair",
+});
+const crimson = localFont({
+  src: [{ path: "./fonts/crimson.woff2", style: "normal" },
+        { path: "./fonts/crimson-italic.woff2", style: "italic" }],
+  weight: "200 900", display: "swap", variable: "--font-crimson",
+});
+const inter  = localFont({ src: "./fonts/inter.woff2",  weight: "100 900", display: "swap", variable: "--font-inter" });
+const jbmono = localFont({ src: "./fonts/jbmono.woff2", weight: "100 800", display: "swap", variable: "--font-jbmono" });
 const fontVars = `${playfair.variable} ${crimson.variable} ${inter.variable} ${jbmono.variable}`;
 import { FaviconManager } from "@/components/FaviconManager";
 import { ServiceWorkerRegister } from "./sw-register";

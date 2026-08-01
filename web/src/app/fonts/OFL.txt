@@ -1,0 +1,10 @@
+The vendored fonts in this directory are licensed under the
+SIL Open Font License, Version 1.1 — https://scripts.sil.org/OFL
+
+  playfair.woff2 / playfair-italic.woff2  Playfair Display  (c) Claus Eggers Sorensen
+  crimson.woff2  / crimson-italic.woff2   Crimson Pro       (c) Jacques Le Bailly
+  inter.woff2                             Inter             (c) Rasmus Andersson
+  jbmono.woff2                            JetBrains Mono    (c) JetBrains s.r.o.
+
+Latin subset, variable weight, as published by Google Fonts. They are committed
+so `next build` needs no network access; see ../layout.tsx.
