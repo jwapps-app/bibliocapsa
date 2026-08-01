@@ -34,8 +34,14 @@ def _merge_overlay(items):
         ratings = community.get_calibre_ratings(cal_ids)
         rstat = calibre_read.statuses(cal_ids)
         # Seed read status from the mapped Calibre column for books without a
-        # Bibliocapsa record (e.g. existing Goodreads-imported read books).
-        missing = [bid for bid in cal_ids if bid not in rstat]
+        # Bibliocapsa record (e.g. existing Goodreads-imported read books) AND
+        # for records that carry no date: marking a book read stores the status
+        # with an empty date_read, while the real date lives in the Calibre Date
+        # Read column. The `date_read` sort already reads that column, so without
+        # this fallback the payload disagreed with the sort and clients that
+        # order locally (iOS) dropped recently-read books to the bottom.
+        missing = [bid for bid in cal_ids
+                   if bid not in rstat or not (rstat[bid].get("date_read") or "")]
         colstat = calibre_read.calibre_column_statuses(missing)
         for it in items:
             if getattr(it, "book_source", None) != "native":
@@ -44,7 +50,12 @@ def _merge_overlay(items):
                 st = rstat.get(it.id) or colstat.get(it.id)
                 if st:
                     it.reading_status = st["status"]
-                    it.date_read = st["date_read"]
+                    date_read = st.get("date_read") or ""
+                    if not date_read:
+                        col = colstat.get(it.id)
+                        if col and st["status"] == "read":
+                            date_read = col.get("date_read") or ""
+                    it.date_read = date_read
     return items
 
 
@@ -591,5 +602,11 @@ def get_book(book_id: int, request: Request):
         detail.community_rating = community.get_calibre_ratings([book_id]).get(book_id)
         st = calibre_read.get_status(book_id)
         detail.reading_status = st["status"]
-        detail.date_read = st["date_read"]
+        date_read = st.get("date_read") or ""
+        if not date_read and st["status"] == "read":
+            # Same fallback as the list payload: the date lives in the Calibre
+            # Date Read column when the store's record has none.
+            col = calibre_read.calibre_column_statuses([book_id]).get(book_id)
+            date_read = (col or {}).get("date_read") or ""
+        detail.date_read = date_read
         return detail
