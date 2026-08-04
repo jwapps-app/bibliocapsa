@@ -204,3 +204,8 @@ input::placeholder { color: var(--parchment-dim); opacity: 0.5; }
 .stagger > *:nth-child(4)   { animation-delay: 120ms; }
 .stagger > *:nth-child(5)   { animation-delay: 160ms; }
 .stagger > *:nth-child(n+6) { animation-delay: 200ms; }
+
+/* Virtualized grids: opt out of the browser's scroll anchoring. Anchoring tries
+   to hold content still while react-virtuoso is also adjusting scroll position —
+   the two correct against each other and the list judders up and down. */
+.virtual-list { overflow-anchor: none; }

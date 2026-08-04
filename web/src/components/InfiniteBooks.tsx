@@ -116,7 +116,7 @@ export function InfiniteBooks({ initialItems, initialTotal, pageSize, fetchParam
           endReached={loadMore}
           overscan={800}
           context={{ loading, hasMore, count: items.length, onVisible: loadMore }}
-          listClassName={`grid ${COLS_CLASS[cols] ?? "grid-cols-3"} gap-2.5 md:gap-7`}
+          listClassName={`virtual-list grid ${COLS_CLASS[cols] ?? "grid-cols-3"} gap-2.5 md:gap-7`}
           itemContent={renderItem}
           components={{ Footer }}
         />

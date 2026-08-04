@@ -77,7 +77,13 @@ function BookCardImpl({ book, className }: Props) {
 
       {/* Info — hidden on mobile (covers only); shown on desktop */}
       <div className="mt-2.5 px-0.5 hidden lg:block">
-        <Link href={href} prefetch={false} className="block leading-snug line-clamp-2 hover:text-[var(--gold-light)] transition-colors text-[0.70rem] lg:text-[0.8rem]"
+        {/* min-h reserves both clamped lines so a 1-line title doesn't make the
+            card shorter than its neighbours (see the uniform-height note below). */}
+        {/* NOTE: no `block` class here — Tailwind's `block` sets display:block,
+            which overrides line-clamp's display:-webkit-box and silently
+            disables the clamp. Titles then run 1-4 lines and every grid row
+            gets a different height (the scroll-judder cause). */}
+        <Link href={href} prefetch={false} className="leading-snug line-clamp-2 min-h-[2.75em] hover:text-[var(--gold-light)] transition-colors text-[0.70rem] lg:text-[0.8rem]"
              style={{fontFamily:"var(--sans)",fontWeight:500,letterSpacing:"-0.01em",color:"var(--parchment)"}}
              title={book.title}>
           {book.title}
@@ -93,25 +99,34 @@ function BookCardImpl({ book, className }: Props) {
             {author}
           </div>
         )}
-        {/* Format label */}
-        {(isDual || isPhysicalOnly) && (
-          <div style={{fontFamily:"var(--mono)",fontSize:"0.55rem",letterSpacing:"0.05em",
-            color: isDual ? "var(--gold-light)" : "#c9933a", opacity:0.8, marginTop:"2px"}}>
-            {isDual ? "digital + physical" : `physical${book.physical_location ? ` · ${book.physical_location}` : ""}`}
-          </div>
-        )}
-        {stars > 0 ? (
-          <div className="flex gap-px mt-1">
-            {[1,2,3,4,5].map(s => (
-              <span key={s} className={clsx("star", s <= stars && "filled")}>★</span>
-            ))}
-          </div>
-        ) : book.community_rating ? (
-          <div className="mt-1" style={{ fontFamily: "var(--mono)", fontSize: "0.62rem", color: "var(--parchment-dim)", opacity: 0.65 }}
-               title="Community rating (Hardcover)">
-            ★ {book.community_rating.toFixed(1)} <span style={{ opacity: 0.6 }}>community</span>
-          </div>
-        ) : null}
+        {/* Format + rating rows are ALWAYS rendered at a FIXED height. Every
+            card must be exactly the same height: VirtuosoGrid assumes uniform
+            item size, and mixed heights make it mis-estimate the total and
+            correct the scroll mid-flight — which looks like fast up/down
+            judder. Fixed heights (not just "always render") matter because the
+            star glyphs and the community text use different font sizes. */}
+        <div className="flex items-center overflow-hidden"
+             style={{fontFamily:"var(--mono)",fontSize:"0.55rem",letterSpacing:"0.05em",
+                     color: isDual ? "var(--gold-light)" : "#c9933a", opacity:0.8,
+                     marginTop:"2px", height:"0.85rem"}}>
+          {(isDual || isPhysicalOnly)
+            ? (isDual ? "digital + physical" : `physical${book.physical_location ? ` · ${book.physical_location}` : ""}`)
+            : ""}
+        </div>
+        <div className="mt-1 flex items-center overflow-hidden" style={{height:"1.05rem"}}>
+          {stars > 0 ? (
+            <div className="flex gap-px">
+              {[1,2,3,4,5].map(s => (
+                <span key={s} className={clsx("star", s <= stars && "filled")}>★</span>
+              ))}
+            </div>
+          ) : book.community_rating ? (
+            <div style={{ fontFamily: "var(--mono)", fontSize: "0.62rem", color: "var(--parchment-dim)", opacity: 0.65 }}
+                 title="Community rating (Hardcover)">
+              ★ {book.community_rating.toFixed(1)} <span style={{ opacity: 0.6 }}>community</span>
+            </div>
+          ) : null}
+        </div>
       </div>
     </div>
   );

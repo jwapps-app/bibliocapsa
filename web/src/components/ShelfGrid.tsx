@@ -17,7 +17,7 @@ export function ShelfGrid({ books, cols }: { books: any[]; cols: number }) {
     setScrollParent((anchorRef.current?.closest("main") as HTMLElement) ?? null);
   }, []);
 
-  const cls = `grid ${COLS_CLASS[cols] ?? "grid-cols-3"} gap-2.5 md:gap-7`;
+  const cls = `virtual-list grid ${COLS_CLASS[cols] ?? "grid-cols-3"} gap-2.5 md:gap-7`;
 
   return (
     <div ref={anchorRef}>
@@ -73,14 +73,18 @@ function ShelfCard({ book }: { book: any }) {
           </div>
         )}
       </div>
+      {/* Every card must be the same height — VirtuosoGrid assumes uniform item
+          size, and mixed heights make it correct the scroll mid-flight (fast
+          up/down jitter). So the title reserves both clamped lines and the
+          physical label always occupies its row. */}
       <div className="mt-2 px-0.5">
-        <div className="leading-tight line-clamp-2" style={{ fontFamily: "var(--serif)", fontSize: "0.85rem", color: "var(--parchment)" }}>{book.title}</div>
+        <div className="leading-tight line-clamp-2 min-h-[2.5em]" style={{ fontFamily: "var(--serif)", fontSize: "0.85rem", color: "var(--parchment)" }}>{book.title}</div>
         <div className="truncate mt-0.5" style={{ fontFamily: "var(--body)", fontSize: "0.78rem", color: "var(--parchment-dim)" }}>{(book.authors || []).join(", ")}</div>
-        {book.book_source === "native" && (
-          <div style={{ fontFamily: "var(--mono)", fontSize: "0.55rem", letterSpacing: "0.06em", color: "#c9933a", opacity: 0.8, marginTop: "2px" }}>
-            physical{book.location ? ` · ${book.location}` : ""}
-          </div>
-        )}
+        <div className="flex items-center overflow-hidden"
+             style={{ fontFamily: "var(--mono)", fontSize: "0.55rem", letterSpacing: "0.06em",
+                      color: "#c9933a", opacity: 0.8, marginTop: "2px", height: "0.85rem" }}>
+          {book.book_source === "native" ? `physical${book.location ? ` · ${book.location}` : ""}` : ""}
+        </div>
       </div>
     </Link>
   );
