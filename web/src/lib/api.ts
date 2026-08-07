@@ -65,7 +65,13 @@ export interface SavedViewConfig {
   collapse_series?: boolean;
   layout?: "grid" | "list";
 }
-export interface SavedView { id: number; name: string; config: SavedViewConfig; position: number; }
+export interface SavedView {
+  id: number; name: string; config: SavedViewConfig; position: number;
+  /** Calibre id for the view's name-keyed filter, resolved server-side. Views
+   *  store names (so iOS can resolve them offline); the web needs the id to
+   *  link to the filtered library instead of falling back to a text search. */
+  filter_id?: number | null;
+}
 export interface CurrentUser { id: number; name: string; username: string; email?: string; role: string; kindle_email?: string | null; theme?: string | null; font?: string | null; }
 export interface Loan {
   id: number; book_id: number; book_source: string;

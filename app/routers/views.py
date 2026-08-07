@@ -55,6 +55,50 @@ def _row(r: dict) -> dict:
     }
 
 
+_FILTER_TABLE = {"series": "series", "author": "authors", "tag": "tags"}
+
+
+def _attach_filter_ids(rows: list) -> list:
+    """Resolve name-keyed filters (series/author/tag) to their Calibre ids.
+
+    Views deliberately store the NAME, not the id, because the iOS app mirrors
+    the catalog locally and can resolve names offline. The web client has no
+    such mirror — without an id it falls back to a plain text search for the
+    name, which matches no titles and renders the view empty. So we resolve here,
+    where the Calibre database is already at hand. Best-effort: anything that
+    doesn't resolve is left as None and the client keeps its old fallback."""
+    wanted: dict = {}
+    for r in rows:
+        f = (r.get("config") or {}).get("filter") or {}
+        t, v = f.get("type"), f.get("value")
+        if t in _FILTER_TABLE and v:
+            wanted.setdefault(t, set()).add(v)
+    if not wanted:
+        return rows
+
+    found: dict = {}
+    try:
+        from ..database import get_conn
+        with get_conn() as cal:
+            for t, names in wanted.items():
+                ns = list(names)
+                ph = ",".join("?" * len(ns))
+                for row in cal.execute(
+                    f"SELECT id, name FROM {_FILTER_TABLE[t]} "
+                    f"WHERE name COLLATE NOCASE IN ({ph})", ns
+                ).fetchall():
+                    found[(t, (row["name"] or "").lower())] = row["id"]
+    except Exception:
+        return rows  # Calibre unreadable — leave ids unset, client falls back
+
+    for r in rows:
+        f = (r.get("config") or {}).get("filter") or {}
+        t, v = f.get("type"), f.get("value")
+        if t in _FILTER_TABLE and v:
+            r["filter_id"] = found.get((t, v.lower()))
+    return rows
+
+
 @router.get("", summary="The current user's saved views")
 def list_views(request: Request):
     u = _user(request)
@@ -66,9 +110,10 @@ def list_views(request: Request):
             "WHERE user_id=%s ORDER BY position, id",
             (u["id"],),
         )
-        return [_row(dict(r)) for r in cur.fetchall()]
+        rows = [_row(dict(r)) for r in cur.fetchall()]
     finally:
         conn.close()
+    return _attach_filter_ids(rows)
 
 
 @router.post("", summary="Save the current view")

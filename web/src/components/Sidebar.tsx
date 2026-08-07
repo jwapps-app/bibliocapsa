@@ -141,7 +141,7 @@ export function Sidebar({ currentParams, bookCount }: SidebarProps) {
               {savedViews.map(v => (
                 <div key={v.id} className="group flex items-center gap-1 pr-1 rounded-sm"
                      style={{ background: "transparent" }}>
-                  <Link href={configToHref(v.config)} onClick={onNavigate}
+                  <Link href={configToHref(v.config, () => v.filter_id ?? undefined)} onClick={onNavigate}
                     title={describeConfig(v.config)}
                     className="flex-1 min-w-0 px-3 py-1.5 rounded-sm transition-all"
                     style={{ color: "var(--parchment)", opacity: 0.8, fontFamily: "var(--body)", fontSize: "0.875rem" }}>

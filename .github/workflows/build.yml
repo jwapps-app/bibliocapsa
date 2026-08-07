@@ -59,8 +59,11 @@ jobs:
 
   build-images:
     needs: [backend-checks, web-checks]
-    # Publish only from main / version tags, never from PRs.
-    if: github.event_name != 'pull_request'
+    # Publish on version TAGS only. Pushing a release used to trigger two full
+    # matrix runs (the main push and the tag push) that built identical images
+    # and thrashed the same BuildKit cache scope — turning a ~14 min job into
+    # 50+. Gates still run on every push to main; images come from tags.
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: read
