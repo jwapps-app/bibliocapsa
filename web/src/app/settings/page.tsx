@@ -9,6 +9,8 @@ interface SettingsView {
   smtp_host?: string | null; smtp_port?: string | null; smtp_user?: string | null;
   smtp_from?: string | null; smtp_tls?: boolean; smtp_password_set?: boolean; smtp_configured?: boolean;
   auto_enrich?: boolean;
+  stats_min_session_secs?: number;
+  stats_min_book_secs?: number;
 }
 interface EnrichJob {
   running: boolean; total: number; processed: number;
@@ -65,6 +67,14 @@ export default function SettingsPage() {
   }, [user]);
 
   const saveReadingMap = async (m: typeof readingMap) => { setReadingMap(m); await api.saveReadingMap(m); };
+
+  // Reading-stats noise filters. Optimistic update, then persist.
+  const saveStatsFilter = async (patch: { stats_min_session_secs?: number; stats_min_book_secs?: number }) => {
+    setSettings(s => (s ? { ...s, ...patch } : s));
+    await fetch("/api/settings", {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch),
+    }).catch(() => {});
+  };
   const runReadingSync = async () => {
     setReadingBusy(true); setReadingMsg(null);
     try {
@@ -484,6 +494,45 @@ export default function SettingsPage() {
               </button>
               {readingMsg && <span style={{ fontFamily: "var(--mono)", fontSize: "0.72rem", color: "var(--gold-light)" }}>{readingMsg}</span>}
             </div>
+          </div>
+        )}
+
+        {/* ── Reading statistics filters ───────────────────────────────── */}
+        {user?.role === "admin" && (
+          <div className="rounded-sm p-5 mt-6 border" style={{ background: "var(--ink-soft)", borderColor: "var(--ink-muted)" }}>
+            <div className="flex items-center gap-2 mb-1">
+              <BookMarked className="w-4 h-4" style={{ color: "var(--gold)" }} />
+              <span style={{ fontFamily: "var(--serif)", fontSize: "1.05rem", color: "var(--parchment)" }}>Reading statistics</span>
+            </div>
+            <p className="mb-4" style={{ fontFamily: "var(--body)", fontSize: "0.85rem", color: "var(--parchment-dim)", opacity: 0.7 }}>
+              KOReader records a session every time a book is opened, so briefly opening something counts as reading it. These filters leave your KOReader data untouched and simply ignore those blips when Bibliocapsa builds your statistics — change them any time.
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <label className="block">
+                <span className="block uppercase tracking-widest mb-1.5" style={{ fontFamily: "var(--mono)", fontSize: "0.55rem", color: "var(--parchment-dim)", opacity: 0.6 }}>Ignore sessions shorter than</span>
+                <select className="bc-input" value={settings?.stats_min_session_secs ?? 0}
+                  onChange={e => saveStatsFilter({ stats_min_session_secs: Number(e.target.value) })}>
+                  <option value={0}>Off — count every session</option>
+                  <option value={30}>30 seconds</option>
+                  <option value={60}>1 minute</option>
+                  <option value={120}>2 minutes</option>
+                </select>
+              </label>
+              <label className="block">
+                <span className="block uppercase tracking-widest mb-1.5" style={{ fontFamily: "var(--mono)", fontSize: "0.55rem", color: "var(--parchment-dim)", opacity: 0.6 }}>Ignore books read less than</span>
+                <select className="bc-input" value={settings?.stats_min_book_secs ?? 0}
+                  onChange={e => saveStatsFilter({ stats_min_book_secs: Number(e.target.value) })}>
+                  <option value={0}>Off — show every book</option>
+                  <option value={60}>1 minute</option>
+                  <option value={120}>2 minutes</option>
+                  <option value={180}>3 minutes</option>
+                  <option value={300}>5 minutes</option>
+                </select>
+              </label>
+            </div>
+            <p className="mt-3" style={{ fontFamily: "var(--body)", fontSize: "0.75rem", color: "var(--parchment-dim)", opacity: 0.55 }}>
+              Short sessions are dropped first, then each book's total is recalculated from what remains — so totals, the activity chart and session counts always agree.
+            </p>
           </div>
         )}
 

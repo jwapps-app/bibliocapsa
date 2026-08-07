@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional
 
-from .. import mailer
+from .. import mailer, koreader_stats
 
 router = APIRouter()
 
@@ -70,6 +70,13 @@ def set_setting(key: str, value: Optional[str]) -> None:
     _settings_cache[key] = (value, time.monotonic())
 
 
+def _int_setting(key: str) -> int:
+    try:
+        return max(0, int(get_setting(key) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _mask(token: Optional[str]) -> Optional[str]:
     if not token:
         return None
@@ -92,6 +99,9 @@ class SettingsView(BaseModel):
     smtp_password_set: bool = False
     smtp_configured: bool = False
     auto_enrich: bool = True
+    # Reading-stats noise filters (seconds; 0 = off) — see app/koreader_stats.py
+    stats_min_session_secs: int = 0
+    stats_min_book_secs: int = 0
 
 
 class SettingsUpdate(BaseModel):
@@ -103,6 +113,8 @@ class SettingsUpdate(BaseModel):
     smtp_from: Optional[str] = None
     smtp_tls: Optional[bool] = None
     auto_enrich: Optional[bool] = None
+    stats_min_session_secs: Optional[int] = None
+    stats_min_book_secs: Optional[int] = None
 
 
 class TestEmail(BaseModel):
@@ -124,6 +136,8 @@ def get_settings(request: Request):
         smtp_password_set=bool(get_setting(mailer.SMTP_PASSWORD)),
         smtp_configured=mailer.is_configured(),
         auto_enrich=auto_enrich_enabled(),
+        stats_min_session_secs=_int_setting(koreader_stats.SETTING_MIN_SESSION),
+        stats_min_book_secs=_int_setting(koreader_stats.SETTING_MIN_BOOK),
     )
 
 
@@ -157,6 +171,10 @@ def update_settings(updates: SettingsUpdate, request: Request):
             set_setting(mailer.SMTP_TLS, "true" if updates.smtp_tls else "false")
         if updates.auto_enrich is not None:
             set_setting(AUTO_ENRICH_KEY, "true" if updates.auto_enrich else "false")
+        if updates.stats_min_session_secs is not None:
+            set_setting(koreader_stats.SETTING_MIN_SESSION, str(max(0, updates.stats_min_session_secs)))
+        if updates.stats_min_book_secs is not None:
+            set_setting(koreader_stats.SETTING_MIN_BOOK, str(max(0, updates.stats_min_book_secs)))
         return get_settings(request)
     except HTTPException:
         raise

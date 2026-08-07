@@ -17,6 +17,81 @@ WEBDAV_DIR = os.getenv("WEBDAV_DIR", "/app/webdav")
 CALIBRE_ROOT = os.getenv("CALIBRE_LIBRARY_PATH", "/calibre")
 SESSION_GAP = 600  # seconds between page events that starts a new "session"
 
+# ── "Didn't really read it" filtering ────────────────────────────────────────
+# KOReader records a session every time a document is opened — including its own
+# internal screens — so brief opens pile up as fake reading. We can't fix that at
+# the source: KOReader merges its statistics DB on sync and the schema has no
+# tombstones, so anything deleted server-side is re-added by the next device
+# sync. Instead we filter at read time, which is immune to that and reversible.
+#
+# Applied as ONE pipeline so every view stays consistent:
+#   1. drop sessions shorter than `min_session`
+#   2. recompute each book's total from the sessions that survive
+#   3. drop books whose recomputed total is under `min_book`
+#   4. totals / daily activity / session lists all derive from what's left
+# Both default to 0 (off), and when both are off the original fast SQL path runs
+# unchanged — no behaviour or performance change.
+SETTING_MIN_SESSION = "stats_min_session_secs"
+SETTING_MIN_BOOK = "stats_min_book_secs"
+
+
+def _thresholds() -> tuple[int, int]:
+    """(min_session_secs, min_book_secs) from settings; 0 = off."""
+    try:
+        from .routers.settings import get_setting
+        def _n(key):
+            try:
+                return max(0, int(get_setting(key) or 0))
+            except (TypeError, ValueError):
+                return 0
+        return _n(SETTING_MIN_SESSION), _n(SETTING_MIN_BOOK)
+    except Exception:
+        return 0, 0
+
+
+def _sessions(conn, min_session: int, book_ids=None) -> list:
+    """Page events grouped into sessions (SESSION_GAP), dropping any session
+    shorter than `min_session`. Each session keeps its page events so daily
+    activity can still be aggregated at page granularity."""
+    if book_ids:
+        q = ",".join("?" * len(book_ids))
+        rows = conn.execute(
+            f"SELECT id_book, start_time, duration FROM page_stat_data "
+            f"WHERE id_book IN ({q}) ORDER BY id_book, start_time", list(book_ids)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id_book, start_time, duration FROM page_stat_data "
+            "ORDER BY id_book, start_time"
+        ).fetchall()
+
+    out, cur = [], None
+    for r in rows:
+        b, st, du = r["id_book"], r["start_time"] or 0, (r["duration"] or 0)
+        if cur is not None and cur["book"] == b and st - cur["end"] <= SESSION_GAP:
+            cur["end"] = st + du
+            cur["seconds"] += du
+            cur["pages"].append((st, du))
+        else:
+            if cur is not None:
+                out.append(cur)
+            cur = {"book": b, "start": st, "end": st + du, "seconds": du, "pages": [(st, du)]}
+    if cur is not None:
+        out.append(cur)
+    if min_session > 0:
+        out = [s for s in out if s["seconds"] >= min_session]
+    return out
+
+
+def _keep_books(sessions: list, min_book: int) -> set:
+    """Book ids whose total across the surviving sessions clears `min_book`."""
+    totals: dict = {}
+    for s in sessions:
+        totals[s["book"]] = totals.get(s["book"], 0) + s["seconds"]
+    if min_book <= 0:
+        return set(totals)
+    return {b for b, secs in totals.items() if secs >= min_book}
+
 
 def stats_path(username: str):
     base = os.path.join(WEBDAV_DIR, username)
@@ -44,6 +119,9 @@ def summary(username: str, since: int = None):
     if not conn:
         return None
     try:
+        min_session, min_book = _thresholds()
+        if min_session or min_book:
+            return _summary_filtered(conn, since, min_session, min_book)
         days = conn.execute(
             "SELECT date(start_time,'unixepoch','localtime') d, SUM(duration) secs, COUNT(*) pages "
             "FROM page_stat_data GROUP BY d ORDER BY d"
@@ -102,6 +180,74 @@ def summary(username: str, since: int = None):
         conn.close()
 
 
+def _summary_filtered(conn, since, min_session: int, min_book: int):
+    """summary() with the session/book thresholds applied. Everything below is
+    derived from the surviving sessions, so totals, the daily chart and the book
+    list can never disagree with each other."""
+    import datetime
+
+    sessions = _sessions(conn, min_session)
+    keep = _keep_books(sessions, min_book)
+    sessions = [s for s in sessions if s["book"] in keep]
+
+    # Daily activity, still at page granularity (localtime, as the SQL did).
+    act: dict = {}
+    for s in sessions:
+        for st, du in s["pages"]:
+            d = datetime.datetime.fromtimestamp(st).strftime("%Y-%m-%d")
+            a = act.setdefault(d, [0, 0])
+            a[0] += du
+            a[1] += 1
+    activity = [{"date": d, "seconds": v[0], "pages": v[1]} for d, v in sorted(act.items())]
+
+    # Per-book aggregates (windowed when `since` is given).
+    agg: dict = {}
+    for s in sessions:
+        for st, du in s["pages"]:
+            if since is not None and st < since:
+                continue
+            a = agg.setdefault(s["book"], {"secs": 0, "pages": 0, "last": 0})
+            a["secs"] += du
+            a["pages"] += 1
+            if st > a["last"]:
+                a["last"] = st
+
+    books = []
+    if agg:
+        ids = list(agg)
+        q = ",".join("?" * len(ids))
+        meta = {b["id"]: b for b in conn.execute(
+            f"SELECT id,title,authors,md5,pages FROM book WHERE id IN ({q})", ids
+        ).fetchall()}
+        for bid, a in agg.items():
+            m = meta.get(bid)
+            if not m or not a["secs"]:
+                continue
+            books.append({
+                "title": m["title"], "authors": m["authors"], "md5": m["md5"],
+                "secs": a["secs"], "pages_read": a["pages"], "pages": m["pages"] or 0,
+                "last_open": a["last"],
+            })
+        books.sort(key=lambda x: x["secs"], reverse=True)
+
+    if since is None:
+        total_seconds = sum(b["secs"] for b in books)
+        total_pages = sum(b["pages_read"] for b in books)
+        days_read = len(activity)
+    else:
+        since_date = datetime.datetime.fromtimestamp(since).strftime("%Y-%m-%d")
+        windowed = [a for a in activity if a["date"] >= since_date]
+        total_seconds = sum(a["seconds"] for a in windowed)
+        total_pages = sum(a["pages"] for a in windowed)
+        days_read = len(windowed)
+
+    return {
+        "total_seconds": total_seconds, "total_pages": total_pages,
+        "book_count": len(books), "days_read": days_read,
+        "activity": activity, "books": books,
+    }
+
+
 def calibre_md5s(cal_conn, book_id: int):
     """Partial-MD5 of each format file for a Calibre book (the KOReader hash)."""
     row = cal_conn.execute("SELECT path FROM books WHERE id = ?", (book_id,)).fetchone()
@@ -132,6 +278,30 @@ def book_stats(username: str, md5s: list):
         if not brows:
             return {"found": False}
         ids = [b["id"] for b in brows]
+
+        min_session, min_book = _thresholds()
+        if min_session or min_book:
+            # Same pipeline as the dashboard so the two can't disagree: drop
+            # short sessions, rebuild the totals from what's left, and hide the
+            # book entirely if it no longer clears the book threshold.
+            sess = _sessions(conn, min_session, book_ids=ids)
+            total = sum(s["seconds"] for s in sess)
+            if min_book and total < min_book:
+                return {"found": False}
+            if not sess:
+                return {"found": False}
+            out = [{"start": s["start"], "seconds": s["seconds"], "pages": len(s["pages"])}
+                   for s in sess]
+            out.reverse()  # most recent first
+            return {
+                "found": True,
+                "total_seconds": total,
+                "total_pages": sum(len(s["pages"]) for s in sess),
+                "book_pages": max((b["pages"] or 0) for b in brows),
+                "last_open": max((b["last_open"] or 0) for b in brows),
+                "sessions": out,
+            }
+
         iq = ",".join("?" * len(ids))
         pages = conn.execute(
             f"SELECT start_time, duration FROM page_stat_data WHERE id_book IN ({iq}) ORDER BY start_time", ids
