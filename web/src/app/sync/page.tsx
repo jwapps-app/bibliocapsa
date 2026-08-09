@@ -16,6 +16,14 @@ export default function SyncPage() {
   const [count, setCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [confirming, setConfirming] = useState(false);
+  // With a Calibre content server configured the write goes through the running
+  // Calibre, so it does NOT need to be closed. If the setting can't be read,
+  // fall back to the cautious wording.
+  const [viaServer, setViaServer] = useState(false);
+  useEffect(() => {
+    fetch("/api/settings").then(r => (r.ok ? r.json() : null))
+      .then(d => setViaServer(!!(d && d.calibre_server_url))).catch(() => {});
+  }, []);
   const [syncing, setSyncing] = useState(false);
   const [uploadingBusy, setUploadingBusy] = useState(false);
   const [result, setResult] = useState<string | null>(null);
@@ -112,7 +120,9 @@ export default function SyncPage() {
               <p className="mb-4" style={{ fontFamily: "var(--body)", fontSize: "0.9rem", color: "var(--parchment-dim)" }}>
                 This writes <strong style={{ color: "var(--parchment)" }}>{count} change{count === 1 ? "" : "s"}</strong> into your Calibre library.
                 <br /><br />
-                <strong style={{ color: "var(--gold-light)" }}>Make sure Calibre is closed</strong> before continuing, or the write may fail.
+                {viaServer
+                  ? <>Changes are sent through your <strong style={{ color: "var(--gold-light)" }}>Calibre content server</strong>, so Calibre can stay open.</>
+                  : <><strong style={{ color: "var(--gold-light)" }}>Make sure Calibre is closed</strong> before continuing, or the write may fail.</>}
               </p>
               <div className="flex items-center justify-end gap-3">
                 <button onClick={() => setConfirming(false)} disabled={syncing}
@@ -120,7 +130,7 @@ export default function SyncPage() {
                 <button onClick={doSync} disabled={syncing}
                   className="inline-flex items-center gap-2 px-4 py-2 rounded-sm border transition-colors hover:border-[var(--gold)] disabled:opacity-50"
                   style={{ fontFamily: "var(--mono)", fontSize: "0.75rem", color: "var(--gold-light)", borderColor: "var(--gold-dim)", background: "rgba(107,78,30,0.2)" }}>
-                  {syncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />} Calibre is closed — Sync
+                  {syncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />} {viaServer ? "Sync now" : "Calibre is closed — Sync"}
                 </button>
               </div>
             </div>

@@ -367,7 +367,7 @@ class SyncRequest(BaseModel):
 def sync_to_calibre(body: SyncRequest, request: Request):
     _require_admin(request)
     if not body.confirm:
-        raise HTTPException(status_code=400, detail="Confirmation required (Calibre must be closed)")
+        raise HTTPException(status_code=400, detail="Confirmation required")
     from .. import calibre_sync, auth
     # Fold the signed-in user's latest KOReader reading (read status / % / finish
     # date) into the pending queue first — so finishing a book at >=99% and then
