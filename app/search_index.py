@@ -35,6 +35,22 @@ INDEX_PATH = os.getenv(
     os.path.join(os.getenv("COVER_CACHE_DIR", "/app/cover_cache"), ".search", "fts.db"),
 )
 
+# Set while a deliberate Sync to Calibre is running. Calibre's FTS db uses a
+# rollback journal, so ANY open reader holds a SHARED lock that blocks calibredb
+# from writing. The rebuild yields between batches and waits here, so a sync
+# never loses the race against a background index build.
+_pause = threading.Event()
+
+
+def pause_for_calibre_write():
+    """Ask a running rebuild to stop touching Calibre's FTS db."""
+    _pause.set()
+
+
+def resume_after_calibre_write():
+    _pause.clear()
+
+
 _BATCH = 50      # books per commit during a rebuild
 _YIELD = 0.05    # seconds slept between batches (keeps CPU/headroom free)
 _lock = threading.Lock()
@@ -144,21 +160,44 @@ def sync(reason: str = "startup") -> None:
         idx.execute("DELETE FROM doc_meta")
         _ensure_docs(idx)
 
-        rid = n = 0
-        for row in cal.execute("SELECT book, format, searchable_text FROM books_text"):
-            text = row["searchable_text"]
-            if not text:
-                continue
-            rid += 1
-            idx.execute("INSERT INTO docs (rowid, searchable_text) VALUES (?, ?)", (rid, text))
-            idx.execute("INSERT INTO doc_meta (rowid_ref, book, format) VALUES (?, ?, ?)",
-                        (rid, row["book"], row["format"]))
-            n += 1
-            if n % _BATCH == 0:
-                idx.commit()
-                time.sleep(_YIELD)
-
+        # Read the (book, format) keys up front — small and quick — then pull the
+        # text in small batches, closing the Calibre connection between them.
+        # Streaming the whole table in one cursor used to hold a read lock for the
+        # entire rebuild (~2 min), which blocked calibredb and made a concurrent
+        # Sync to Calibre fail. Now the lock is held for a few rows at a time.
+        keys = [(r["book"], r["format"]) for r in
+                cal.execute("SELECT book, format FROM books_text ORDER BY book, format")]
         cal.close()
+
+        rid = n = 0
+        for i in range(0, len(keys), _BATCH):
+            # Yield the Calibre database entirely while a sync is writing.
+            while _pause.is_set():
+                time.sleep(0.2)
+
+            chunk = keys[i:i + _BATCH]
+            cal = sqlite3.connect(f"file:{FTS_DB}?mode=ro", uri=True, timeout=30)
+            cal.row_factory = sqlite3.Row
+            try:
+                cond = " OR ".join(["(book = ? AND format = ?)"] * len(chunk))
+                params = [v for k in chunk for v in k]
+                rows = cal.execute(
+                    f"SELECT book, format, searchable_text FROM books_text WHERE {cond}", params
+                ).fetchall()
+            finally:
+                cal.close()   # release the lock before doing any index work
+
+            for row in rows:
+                text = row["searchable_text"]
+                if not text:
+                    continue
+                rid += 1
+                idx.execute("INSERT INTO docs (rowid, searchable_text) VALUES (?, ?)", (rid, text))
+                idx.execute("INSERT INTO doc_meta (rowid_ref, book, format) VALUES (?, ?, ?)",
+                            (rid, row["book"], row["format"]))
+                n += 1
+            idx.commit()
+            time.sleep(_YIELD)
         _set_state(idx, state="ready", fingerprint=fp, indexed=n, last_sync=int(time.time()))
         idx.commit()
         idx.close()

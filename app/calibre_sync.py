@@ -254,6 +254,30 @@ def run_sync(library: str = LIBRARY) -> dict:
     from . import calibre_overlay as overlay
     synced, added, dropped, failed = 0, 0, 0, []
 
+    # Calibre's FTS db uses a rollback journal, so a background index rebuild
+    # holding it open blocks calibredb from writing (it surfaces as an opaque
+    # "fts_db is already in use" / "database is locked"). Ask the indexer to
+    # stand down for the duration of the sync.
+    try:
+        from . import search_index
+        search_index.pause_for_calibre_write()
+    except Exception:
+        search_index = None
+
+    try:
+        return _run_sync(library)
+    finally:
+        if search_index is not None:
+            try:
+                search_index.resume_after_calibre_write()
+            except Exception:
+                pass
+
+
+def _run_sync(library: str) -> dict:
+    from . import calibre_overlay as overlay
+    synced, added, dropped, failed = 0, 0, 0, []
+
     items = overlay.pending()
     existing = _existing_book_ids([it["book_id"] for it in items], library)
     for item in items:
