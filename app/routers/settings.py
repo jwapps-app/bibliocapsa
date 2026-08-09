@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional
 
-from .. import mailer, koreader_stats
+from .. import mailer, koreader_stats, calibre_sync
 
 router = APIRouter()
 
@@ -102,6 +102,10 @@ class SettingsView(BaseModel):
     # Reading-stats noise filters (seconds; 0 = off) — see app/koreader_stats.py
     stats_min_session_secs: int = 0
     stats_min_book_secs: int = 0
+    # Optional Calibre content server for the write path (see calibre_sync.py)
+    calibre_server_url: Optional[str] = None
+    calibre_server_user: Optional[str] = None
+    calibre_server_password_set: bool = False
 
 
 class SettingsUpdate(BaseModel):
@@ -115,6 +119,9 @@ class SettingsUpdate(BaseModel):
     auto_enrich: Optional[bool] = None
     stats_min_session_secs: Optional[int] = None
     stats_min_book_secs: Optional[int] = None
+    calibre_server_url: Optional[str] = None
+    calibre_server_user: Optional[str] = None
+    calibre_server_password: Optional[str] = None  # "" clears it
 
 
 class TestEmail(BaseModel):
@@ -138,6 +145,9 @@ def get_settings(request: Request):
         auto_enrich=auto_enrich_enabled(),
         stats_min_session_secs=_int_setting(koreader_stats.SETTING_MIN_SESSION),
         stats_min_book_secs=_int_setting(koreader_stats.SETTING_MIN_BOOK),
+        calibre_server_url=get_setting(calibre_sync.SETTING_SERVER_URL),
+        calibre_server_user=get_setting(calibre_sync.SETTING_SERVER_USER),
+        calibre_server_password_set=bool(get_setting(calibre_sync.SETTING_SERVER_PASSWORD)),
     )
 
 
@@ -175,6 +185,12 @@ def update_settings(updates: SettingsUpdate, request: Request):
             set_setting(koreader_stats.SETTING_MIN_SESSION, str(max(0, updates.stats_min_session_secs)))
         if updates.stats_min_book_secs is not None:
             set_setting(koreader_stats.SETTING_MIN_BOOK, str(max(0, updates.stats_min_book_secs)))
+        if updates.calibre_server_url is not None:
+            set_setting(calibre_sync.SETTING_SERVER_URL, updates.calibre_server_url.strip() or None)
+        if updates.calibre_server_user is not None:
+            set_setting(calibre_sync.SETTING_SERVER_USER, updates.calibre_server_user.strip() or None)
+        if updates.calibre_server_password is not None:
+            set_setting(calibre_sync.SETTING_SERVER_PASSWORD, updates.calibre_server_password or None)
         return get_settings(request)
     except HTTPException:
         raise
@@ -196,3 +212,28 @@ def smtp_test(body: TestEmail, request: Request):
         import logging
         logging.getLogger(__name__).warning("smtp test failed: %s", e)
         raise HTTPException(status_code=400, detail="Test email failed to send. Check the SMTP settings and try again.")
+
+
+@router.post("/calibre-server-test", summary="Check the Calibre content server (admin)")
+def calibre_server_test(request: Request):
+    """Verify Bibliocapsa can actually WRITE through the configured server.
+    A read would succeed even when writes are disabled (the common
+    misconfiguration), so this runs calibredb's own connectivity check and
+    reports the distinct failure modes plainly."""
+    _require_admin(request)
+    import subprocess
+    url, user, _pw = calibre_sync.server_config()
+    if not url:
+        return {"ok": False, "detail": "No Calibre server URL configured — syncing writes to the library folder (Calibre must be closed)."}
+    try:
+        proc = subprocess.run(
+            [calibre_sync.CALIBREDB, "list", "--limit", "1", *calibre_sync._target_args()],
+            capture_output=True, text=True, timeout=45,
+        )
+    except Exception as e:
+        return {"ok": False, "detail": f"Could not run calibredb: {e}"}
+    if proc.returncode == 0:
+        return {"ok": True, "detail": f"Connected to {url}" + (f" as {user}" if user else ""),
+                "writable": None}
+    out = (proc.stderr or proc.stdout or "calibredb failed").strip()
+    return {"ok": False, "detail": calibre_sync._explain(out)}

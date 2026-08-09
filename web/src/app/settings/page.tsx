@@ -11,6 +11,9 @@ interface SettingsView {
   auto_enrich?: boolean;
   stats_min_session_secs?: number;
   stats_min_book_secs?: number;
+  calibre_server_url?: string | null;
+  calibre_server_user?: string | null;
+  calibre_server_password_set?: boolean;
 }
 interface EnrichJob {
   running: boolean; total: number; processed: number;
@@ -68,7 +71,38 @@ export default function SettingsPage() {
 
   const saveReadingMap = async (m: typeof readingMap) => { setReadingMap(m); await api.saveReadingMap(m); };
 
+  // Calibre content server (optional write path).
+  const [calSrv, setCalSrv] = useState({ url: "", user: "", password: "" });
+  const [calSrvMsg, setCalSrvMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [calSrvBusy, setCalSrvBusy] = useState(false);
+  const saveCalibreServer = async () => {
+    setCalSrvBusy(true); setCalSrvMsg(null);
+    try {
+      const body: Record<string, string> = {
+        calibre_server_url: calSrv.url.trim(),
+        calibre_server_user: calSrv.user.trim(),
+      };
+      if (calSrv.password) body.calibre_server_password = calSrv.password;
+      const r = await fetch("/api/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      if (!r.ok) throw new Error("Could not save");
+      setSettings(await r.json());
+      setCalSrv(c => ({ ...c, password: "" }));
+      const t = await fetch("/api/settings/calibre-server-test", { method: "POST" }).then(x => x.json());
+      setCalSrvMsg({ ok: !!t.ok, text: t.detail ?? "" });
+    } catch (e) {
+      setCalSrvMsg({ ok: false, text: e instanceof Error ? e.message : "Could not save" });
+    } finally { setCalSrvBusy(false); }
+  };
+
   // Reading-stats noise filters. Optimistic update, then persist.
+  useEffect(() => {
+    if (settings) setCalSrv(c => ({
+      url: c.url || settings.calibre_server_url || "",
+      user: c.user || settings.calibre_server_user || "",
+      password: c.password,
+    }));
+  }, [settings]);
+
   const saveStatsFilter = async (patch: { stats_min_session_secs?: number; stats_min_book_secs?: number }) => {
     setSettings(s => (s ? { ...s, ...patch } : s));
     await fetch("/api/settings", {
@@ -533,6 +567,50 @@ export default function SettingsPage() {
             <p className="mt-3" style={{ fontFamily: "var(--body)", fontSize: "0.75rem", color: "var(--parchment-dim)", opacity: 0.55 }}>
               Short sessions are dropped first, then each book's total is recalculated from what remains — so totals, the activity chart and session counts always agree.
             </p>
+          </div>
+        )}
+
+        {/* ── Calibre content server (optional write path) ─────────────── */}
+        {user?.role === "admin" && (
+          <div className="rounded-sm p-5 mt-6 border" style={{ background: "var(--ink-soft)", borderColor: "var(--ink-muted)" }}>
+            <div className="flex items-center gap-2 mb-1">
+              <RefreshCw className="w-4 h-4" style={{ color: "var(--gold)" }} />
+              <span style={{ fontFamily: "var(--serif)", fontSize: "1.05rem", color: "var(--parchment)" }}>Calibre content server</span>
+            </div>
+            <p className="mb-4" style={{ fontFamily: "var(--body)", fontSize: "0.85rem", color: "var(--parchment-dim)", opacity: 0.7 }}>
+              Leave blank to write changes straight to the library folder — which requires Calibre to be <strong style={{ color: "var(--parchment)" }}>closed</strong> when you sync. Point this at a running Calibre content server and syncs are sent through it instead, so Calibre can stay open. Reading your library is unaffected either way.
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <label className="block sm:col-span-3">
+                <span className="block uppercase tracking-widest mb-1.5" style={{ fontFamily: "var(--mono)", fontSize: "0.55rem", color: "var(--parchment-dim)", opacity: 0.6 }}>Server URL</span>
+                <input className="bc-input" placeholder="http://calibre:8080/#calibre" value={calSrv.url}
+                  onChange={e => setCalSrv(c => ({ ...c, url: e.target.value }))} />
+              </label>
+              <label className="block">
+                <span className="block uppercase tracking-widest mb-1.5" style={{ fontFamily: "var(--mono)", fontSize: "0.55rem", color: "var(--parchment-dim)", opacity: 0.6 }}>Username (if required)</span>
+                <input className="bc-input" value={calSrv.user}
+                  onChange={e => setCalSrv(c => ({ ...c, user: e.target.value }))} />
+              </label>
+              <label className="block">
+                <span className="block uppercase tracking-widest mb-1.5" style={{ fontFamily: "var(--mono)", fontSize: "0.55rem", color: "var(--parchment-dim)", opacity: 0.6 }}>
+                  Password {settings?.calibre_server_password_set ? "(saved)" : ""}
+                </span>
+                <input className="bc-input" type="password" placeholder={settings?.calibre_server_password_set ? "••••••••" : ""}
+                  value={calSrv.password} onChange={e => setCalSrv(c => ({ ...c, password: e.target.value }))} />
+              </label>
+              <div className="flex items-end">
+                <button onClick={saveCalibreServer} disabled={calSrvBusy}
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-sm border transition-colors hover:border-[var(--gold)] disabled:opacity-40"
+                  style={{ fontFamily: "var(--mono)", fontSize: "0.75rem", color: "var(--gold-light)", borderColor: "var(--gold-dim)", background: "rgba(107,78,30,0.2)" }}>
+                  {calSrvBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} Save &amp; test
+                </button>
+              </div>
+            </div>
+            {calSrvMsg && (
+              <p className="mt-3 whitespace-pre-line" style={{ fontFamily: "var(--mono)", fontSize: "0.72rem", color: calSrvMsg.ok ? "var(--gold-light)" : "#d88", opacity: 0.9 }}>
+                {calSrvMsg.ok ? "✓ " : "✕ "}{calSrvMsg.text}
+              </p>
+            )}
           </div>
         )}
 

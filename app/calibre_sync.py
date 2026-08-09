@@ -21,6 +21,66 @@ LIBRARY = os.getenv("CALIBRE_LIBRARY_PATH", "/calibre")
 CALIBREDB = os.getenv("CALIBREDB_BIN", "calibredb")
 EBOOK_META = os.getenv("EBOOK_META_BIN", "ebook-meta")
 
+# ── Optional: write through a running Calibre Content server ─────────────────
+# By default calibredb writes straight to the library folder, which is only safe
+# when the Calibre GUI is closed (an open GUI holds the library and its in-memory
+# state would diverge from the file). If a server URL is configured, calibredb is
+# pointed at that instead — the running Calibre owns the library and serializes
+# the write, so it can stay open.
+#
+# This changes ONLY the write path. Every read (metadata.db, covers, book files,
+# the search index) still comes straight off the filesystem, so the library must
+# remain mounted either way. Blank URL = today's behaviour, unchanged.
+SETTING_SERVER_URL = "calibre_server_url"
+SETTING_SERVER_USER = "calibre_server_user"
+SETTING_SERVER_PASSWORD = "calibre_server_password"
+
+
+def server_config() -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """(url, username, password) for the Calibre content server; url None = off."""
+    try:
+        from .routers.settings import get_setting
+        url = (get_setting(SETTING_SERVER_URL) or "").strip()
+        if not url:
+            return None, None, None
+        return url, (get_setting(SETTING_SERVER_USER) or "").strip() or None, \
+               get_setting(SETTING_SERVER_PASSWORD) or None
+    except Exception:
+        return None, None, None
+
+
+def _target_args(library: str = LIBRARY) -> list[str]:
+    """The `--with-library` (and auth) arguments for a calibredb invocation:
+    the content-server URL when configured, else the library path."""
+    url, user, password = server_config()
+    if not url:
+        return ["--with-library", library]
+    args = ["--with-library", url]
+    if user:
+        args += ["--username", user]
+        if password:
+            args += ["--password", password]
+    return args
+
+
+def _explain(out: str) -> str:
+    """Add a hint when a failure looks like a server/config problem rather than a
+    problem with the book itself — 'Forbidden' in particular is what the content
+    server returns when it's running but wasn't started with writes enabled."""
+    url, _, _ = server_config()
+    if not url:
+        return out
+    low = (out or "").lower()
+    if "forbidden" in low:
+        return (f"{out}\n(The Calibre server at {url} refused the write. Start it with "
+                f"--enable-local-write, or with authentication and a user that has write access.)")
+    if any(k in low for k in ("connection refused", "could not connect", "timed out",
+                              "name or service not known", "failed to establish")):
+        return f"{out}\n(Could not reach the Calibre server at {url}. Is it running?)"
+    if "unauthorized" in low or "401" in low:
+        return f"{out}\n(The Calibre server at {url} rejected the credentials.)"
+    return out
+
 
 def extract_book_metadata(path: str) -> tuple[Optional[str], Optional[str]]:
     """Read Title / Author(s) from a book file via Calibre's `ebook-meta`."""
@@ -139,9 +199,9 @@ def sync_book(book_id: int, fields: dict, library: str = LIBRARY) -> tuple[bool,
 
     field_args = _field_args(std)
     if field_args:
-        ok, out = _run([CALIBREDB, "set_metadata", str(book_id), *field_args, "--with-library", library])
+        ok, out = _run([CALIBREDB, "set_metadata", str(book_id), *field_args, *_target_args(library)])
         if not ok:
-            return False, out
+            return False, _explain(out)
         outputs.append(out)
 
     valid_labels = _valid_custom_labels(library)
@@ -150,9 +210,9 @@ def sync_book(book_id: int, fields: dict, library: str = LIBRARY) -> tuple[bool,
         if valid_labels is not None and label not in valid_labels:
             outputs.append(f"skipped #{label} (no such column)")
             continue
-        ok, out = _run([CALIBREDB, "set_custom", label, str(book_id), _format_custom(val), "--with-library", library])
+        ok, out = _run([CALIBREDB, "set_custom", label, str(book_id), _format_custom(val), *_target_args(library)])
         if not ok:
-            return False, out
+            return False, _explain(out)
         outputs.append(out)
 
     return True, (" | ".join(outputs) or "no-op")
@@ -166,10 +226,10 @@ def add_upload_to_calibre(rec: dict, library: str = LIBRARY) -> tuple[bool, str]
     if not os.path.isfile(path):
         return False, "uploaded file missing"
     try:
-        proc = subprocess.run([CALIBREDB, "add", path, "--with-library", library],
+        proc = subprocess.run([CALIBREDB, "add", path, *_target_args(library)],
                               capture_output=True, text=True, timeout=300)
         if proc.returncode != 0:
-            return False, (proc.stderr or proc.stdout or "calibredb add failed").strip()
+            return False, _explain((proc.stderr or proc.stdout or "calibredb add failed").strip())
         out = (proc.stdout or "").strip()
         m = re.search(r"Added book ids?:\s*([0-9,]+)", out)
         new_id = m.group(1).split(",")[0] if m else None
@@ -181,7 +241,7 @@ def add_upload_to_calibre(rec: dict, library: str = LIBRARY) -> tuple[bool, str]
             if rec.get("authors"):
                 fields += ["--field", f"authors:{rec['authors'].replace(',', ' & ')}"]
             if fields:
-                subprocess.run([CALIBREDB, "set_metadata", new_id, *fields, "--with-library", library],
+                subprocess.run([CALIBREDB, "set_metadata", new_id, *fields, *_target_args(library)],
                                capture_output=True, text=True, timeout=120)
         return True, out
     except Exception as e:
