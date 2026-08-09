@@ -9,23 +9,32 @@ RUN useradd -m -u 1001 bridge
 
 WORKDIR /app
 
-# Calibre CLI (calibredb) for the "Sync to Calibre" write-back. Installed as an
-# early, cached layer so ordinary backend rebuilds stay fast. Headless: Qt runs
-# offscreen. (calibredb only runs during a deliberate, confirmed sync.)
+# Calibre CLI (calibredb + ebook-meta) for the "Sync to Calibre" write-back.
+# Installed from Calibre's official build, pinned, rather than Debian's package:
+# Debian is stuck on 8.5, while the library is managed by a much newer desktop
+# Calibre. An older calibredb writing to a library whose schema a newer Calibre
+# has migrated is the risk this avoids — that binary edits real books. Bump
+# CALIBRE_VERSION deliberately to track the desktop version.
+#
+# The official build is self-contained, so it also avoids Debian's python3-*
+# dependency tree (scipy/sympy/numpy, ~220 MB) that we previously stripped by
+# hand. Early layer so ordinary backend rebuilds stay cached. Headless: Qt runs
+# offscreen; calibredb only runs during a deliberate, confirmed sync.
+ARG CALIBRE_VERSION=9.13.0
 ENV DEBIAN_FRONTEND=noninteractive
-# The Debian calibre package drags in ~220 MB that calibredb never touches:
-# scipy/sympy/numpy/mpmath (hard deps of python3-fonttools, used only for
-# variable-font math) and docs. Stripped in the same layer so the image never
-# carries them. NOTE: /usr/share/calibre/localization must stay — calibredb
-# loads iso639.calibre_msgpack from it at startup (removing it broke Sync to
-# Calibre in v1.17.0 with FileNotFoundError).
-RUN apt-get update && apt-get install -y --no-install-recommends calibre \
-    && rm -rf /var/lib/apt/lists/* \
-    && rm -rf /usr/lib/python3/dist-packages/scipy \
-              /usr/lib/python3/dist-packages/sympy \
-              /usr/lib/python3/dist-packages/numpy* \
-              /usr/lib/python3/dist-packages/mpmath \
-              /usr/share/doc
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      wget xz-utils ca-certificates \
+      libgl1 libegl1 libopengl0 libxkbcommon0 libxkbcommon-x11-0 libfontconfig1 \
+      libglib2.0-0 libdbus-1-3 libxcb1 libxcb-cursor0 libxcb-xinerama0 libxcb-icccm4 \
+      libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 \
+      libxcb-xkb1 libx11-xcb1 libxrandr2 libxi6 libxtst6 libxcomposite1 libxdamage1 \
+      libnss3 libasound2 libfreetype6 libharfbuzz0b \
+ && arch="$(dpkg --print-architecture)" \
+ && case "$arch" in amd64) ca=x86_64 ;; arm64) ca=arm64 ;; *) echo "unsupported arch $arch" >&2; exit 1 ;; esac \
+ && wget -q -O /tmp/calibre.txz "https://download.calibre-ebook.com/${CALIBRE_VERSION}/calibre-${CALIBRE_VERSION}-${ca}.txz" \
+ && mkdir -p /opt/calibre && tar xf /tmp/calibre.txz -C /opt/calibre && rm /tmp/calibre.txz \
+ && rm -rf /var/lib/apt/lists/* /usr/share/doc
+ENV PATH="/opt/calibre:${PATH}"
 # gosu lets the entrypoint fix bind-mount ownership as root, then drop to `bridge`.
 RUN apt-get update && apt-get install -y --no-install-recommends gosu \
     && rm -rf /var/lib/apt/lists/*
