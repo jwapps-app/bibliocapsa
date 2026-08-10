@@ -233,9 +233,13 @@ export default function SettingsPage() {
   }, []);
 
   useEffect(() => {
-    loadSettings();
-    loadStatus();
-    api.me().then(u => { setUser(u); if (u?.role === "admin") loadAccounts(); }).catch(() => {});
+    // Settings, enrichment status and accounts are all admin-only endpoints, so
+    // resolve the role FIRST and only then fetch them — a member requesting them
+    // gets a 403 whose body would otherwise land in `settings` as junk.
+    api.me().then(u => {
+      setUser(u);
+      if (u?.role === "admin") { loadSettings(); loadStatus(); loadAccounts(); }
+    }).catch(() => {});
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [loadSettings, loadStatus, loadAccounts]);
 
@@ -308,7 +312,11 @@ export default function SettingsPage() {
         {/* ── KOReader integration ────────────────────────────────────── */}
         <KOReaderSettings />
 
-        {/* ── Hardcover token ─────────────────────────────────────────── */}
+        {/* ── Hardcover token (admin only) ────────────────────────────── */}
+        {/* The token is one server-wide setting, not a per-user one, and every
+            enrichment endpoint is admin-gated. A member could only ever get a
+            403 from these controls, so don't show them the library's plumbing. */}
+        {user?.role === "admin" && (
         <div className="rounded-sm p-5 mb-6 border" style={{ background: "var(--ink-soft)", borderColor: "var(--ink-muted)" }}>
           <div className="flex items-center gap-2 mb-3">
             <KeyRound className="w-4 h-4" style={{ color: "var(--gold)" }} />
@@ -358,8 +366,10 @@ export default function SettingsPage() {
             </button>
           </div>
         </div>
+        )}
 
-        {/* ── Enrichment ──────────────────────────────────────────────── */}
+        {/* ── Enrichment (admin only) ─────────────────────────────────── */}
+        {user?.role === "admin" && (
         <div className="rounded-sm p-5 border" style={{ background: "var(--ink-soft)", borderColor: "var(--ink-muted)" }}>
           <div className="flex items-center gap-2 mb-3">
             <Sparkles className="w-4 h-4" style={{ color: "var(--gold)" }} />
@@ -452,6 +462,7 @@ export default function SettingsPage() {
             </>
           )}
         </div>
+        )}
 
         {/* ── Library tools (admin only) ──────────────────────────────── */}
         {user?.role === "admin" && (

@@ -56,22 +56,37 @@ def health(request: Request):
     # Calibre DB is reachable; return library counts ONLY to an authenticated
     # caller, so an anonymous internet visitor can't learn how many books are in
     # the library. Never surface raw error strings here.
-    from .. import auth
+    from .. import auth, access
     try:
+        # This route is auth-exempt (the Docker healthcheck hits it), so the
+        # middleware never populated request.state.user -- take the restriction
+        # from the user we authenticate here, not from request.state.
+        #
+        # Counts are scoped to what the caller may actually see: a member limited
+        # to certain genres must not be shown a total for books they can't browse
+        # (these numbers drive the header and the sidebar's "Library" figure).
+        user = auth.authenticate_request(request)
+        allowed = access.get_restriction(user)
         with get_conn() as conn:
-            if auth.authenticate_request(request) is None:
+            if user is None:
                 conn.execute("SELECT 1").fetchone()
                 return HealthResponse(status="ok", calibre_db="connected", book_count=0)
-            calibre_count = conn.execute("SELECT COUNT(*) FROM books").fetchone()[0]
+            pred, pp = access.calibre_predicate(allowed, "b")
+            if pred:
+                calibre_count = conn.execute(
+                    f"SELECT COUNT(*) FROM books b WHERE {pred}", pp).fetchone()[0]
+            else:
+                calibre_count = conn.execute("SELECT COUNT(*) FROM books").fetchone()[0]
 
         native_count = 0
         try:
-            from ..pg_database import get_database_url
-            import psycopg2
-            pg = psycopg2.connect(get_database_url())
+            from ..pg_database import get_pg
+            nat_pred, nat_params = access.native_predicate(allowed)
+            where = "(format != 'digital' OR format IS NULL)" + (f" AND {nat_pred}" if nat_pred else "")
+            pg = get_pg()
             cur = pg.cursor()
-            cur.execute("SELECT COUNT(*) FROM native_books WHERE format != 'digital' OR format IS NULL")
-            native_count = cur.fetchone()[0]
+            cur.execute(f"SELECT COUNT(*) AS c FROM native_books WHERE {where}", nat_params)
+            native_count = cur.fetchone()["c"]
             pg.close()
         except Exception:
             pass
