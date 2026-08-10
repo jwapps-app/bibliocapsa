@@ -35,20 +35,37 @@ INDEX_PATH = os.getenv(
     os.path.join(os.getenv("COVER_CACHE_DIR", "/app/cover_cache"), ".search", "fts.db"),
 )
 
-# Set while a deliberate Sync to Calibre is running. Calibre's FTS db uses a
+# Held-count of writers currently syncing to Calibre. Calibre's FTS db uses a
 # rollback journal, so ANY open reader holds a SHARED lock that blocks calibredb
 # from writing. The rebuild yields between batches and waits here, so a sync
 # never loses the race against a background index build.
-_pause = threading.Event()
+#
+# A COUNTER, not a flag: the manual Sync and the auto-sync worker can overlap
+# (pressing Sync queues reading updates for the worker, then runs the manual
+# sync over the same books). With a boolean, whichever finished first would
+# clear the other's pause and the indexer would resume mid-write — the exact
+# locked-database failure the pause exists to prevent.
+_pause_count = 0
+_pause_lock = threading.Lock()
 
 
 def pause_for_calibre_write():
-    """Ask a running rebuild to stop touching Calibre's FTS db."""
-    _pause.set()
+    """Ask a running rebuild to stop touching Calibre's FTS db. Reentrant:
+    every caller MUST balance with resume_after_calibre_write()."""
+    global _pause_count
+    with _pause_lock:
+        _pause_count += 1
 
 
 def resume_after_calibre_write():
-    _pause.clear()
+    global _pause_count
+    with _pause_lock:
+        _pause_count = max(0, _pause_count - 1)
+
+
+def _paused() -> bool:
+    with _pause_lock:
+        return _pause_count > 0
 
 
 _BATCH = 50      # books per commit during a rebuild
@@ -172,7 +189,7 @@ def sync(reason: str = "startup") -> None:
         rid = n = 0
         for i in range(0, len(keys), _BATCH):
             # Yield the Calibre database entirely while a sync is writing.
-            while _pause.is_set():
+            while _paused():
                 time.sleep(0.2)
 
             chunk = keys[i:i + _BATCH]

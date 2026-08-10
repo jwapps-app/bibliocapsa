@@ -21,6 +21,13 @@ WORKDIR /app
 # hand. Early layer so ordinary backend rebuilds stay cached. Headless: Qt runs
 # offscreen; calibredb only runs during a deliberate, confirmed sync.
 ARG CALIBRE_VERSION=9.13.0
+# sha256 of the official tarballs — the build fails on any mismatch, so a
+# tampered or truncated download can never become the binary that edits the
+# library. Recompute BOTH when bumping CALIBRE_VERSION:
+#   curl -sL https://download.calibre-ebook.com/<v>/calibre-<v>-x86_64.txz | shasum -a 256
+#   curl -sL https://download.calibre-ebook.com/<v>/calibre-<v>-arm64.txz  | shasum -a 256
+ARG CALIBRE_SHA256_AMD64=d664fe74953463f1b679945a5460234b61cbf539da48fc78f2111ff8d9503cc0
+ARG CALIBRE_SHA256_ARM64=a700fd765309b5b0fe5725ad907159fe77832f4a78fee59e34eeb31b8002cb7a
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
       wget xz-utils ca-certificates \
@@ -30,8 +37,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libxcb-xkb1 libx11-xcb1 libxrandr2 libxi6 libxtst6 libxcomposite1 libxdamage1 \
       libnss3 libasound2 libfreetype6 libharfbuzz0b \
  && arch="$(dpkg --print-architecture)" \
- && case "$arch" in amd64) ca=x86_64 ;; arm64) ca=arm64 ;; *) echo "unsupported arch $arch" >&2; exit 1 ;; esac \
+ && case "$arch" in \
+      amd64) ca=x86_64; sum="$CALIBRE_SHA256_AMD64" ;; \
+      arm64) ca=arm64;  sum="$CALIBRE_SHA256_ARM64" ;; \
+      *) echo "unsupported arch $arch" >&2; exit 1 ;; \
+    esac \
  && wget -q -O /tmp/calibre.txz "https://download.calibre-ebook.com/${CALIBRE_VERSION}/calibre-${CALIBRE_VERSION}-${ca}.txz" \
+ && echo "${sum}  /tmp/calibre.txz" | sha256sum -c - \
  && mkdir -p /opt/calibre && tar xf /tmp/calibre.txz -C /opt/calibre && rm /tmp/calibre.txz \
  && rm -rf /var/lib/apt/lists/* /usr/share/doc
 ENV PATH="/opt/calibre:${PATH}"

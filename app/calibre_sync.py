@@ -270,6 +270,26 @@ _auto_q: "queue.Queue[int]" = queue.Queue()
 _auto_worker: Optional[threading.Thread] = None
 _auto_lock = threading.Lock()
 
+# Serializes ALL Calibre writes in this process — the manual Sync and the
+# auto-sync worker share it. They genuinely overlap: pressing Sync first queues
+# reading updates (which enqueues auto-sync jobs), then runs the manual sync
+# over those same books. Without the lock both would write the same edits
+# concurrently; with it, whoever runs second finds the fields already applied
+# and discarded, and no-ops.
+_calibre_write_lock = threading.Lock()
+
+
+def _discard_applied(book_id: int, pushed: dict) -> None:
+    """Clear pushed fields from the overlay — but only those whose pending value
+    is STILL the value we wrote. If the user re-edited a field while calibredb
+    was in flight, the newer value must survive to be synced, not be discarded
+    on the strength of the older write."""
+    from . import calibre_overlay as overlay
+    current = (overlay.get_edits([book_id]) or {}).get(book_id) or {}
+    for field, value in pushed.items():
+        if field in current and current[field] == value:
+            overlay.discard(book_id, field)
+
 
 def auto_sync_enabled() -> bool:
     """Whether a saved edit should be pushed to Calibre immediately. Default off.
@@ -340,33 +360,33 @@ def _auto_apply_one(book_id: int) -> None:
     """Apply one book's pending edits. On any failure the edit is left in the
     overlay for the manual sync — auto-apply only ever removes work, never data."""
     from . import calibre_overlay as overlay
-    fields = (overlay.get_edits([book_id]) or {}).get(book_id) or {}
-    if not fields:
-        return
-    if not _existing_book_ids([book_id], LIBRARY):
-        return  # gone from Calibre; the manual sync path handles dropping it
+    with _calibre_write_lock:
+        # Re-read INSIDE the lock: if a manual sync just applied this book,
+        # nothing is pending any more and this is a no-op instead of a rewrite.
+        fields = (overlay.get_edits([book_id]) or {}).get(book_id) or {}
+        if not fields:
+            return
+        if not _existing_book_ids([book_id], LIBRARY):
+            return  # gone from Calibre; the manual sync path handles dropping it
 
-    try:
-        from . import search_index
-        search_index.pause_for_calibre_write()
-    except Exception:
-        search_index = None
-    try:
-        ok, out = sync_book(book_id, fields, LIBRARY)
-    except Exception as e:
-        ok, out = False, str(e)
-    finally:
-        if search_index is not None:
-            try:
-                search_index.resume_after_calibre_write()
-            except Exception:
-                pass
+        try:
+            from . import search_index
+            search_index.pause_for_calibre_write()
+        except Exception:
+            search_index = None
+        try:
+            ok, out = sync_book(book_id, fields, LIBRARY)
+        except Exception as e:
+            ok, out = False, str(e)
+        finally:
+            if search_index is not None:
+                try:
+                    search_index.resume_after_calibre_write()
+                except Exception:
+                    pass
 
     if ok:
-        # Discard only the fields we actually pushed, so an edit saved while the
-        # calibredb call was in flight isn't dropped along with them.
-        for field in fields:
-            overlay.discard(book_id, field)
+        _discard_applied(book_id, fields)
         logger.info("Auto-synced book %s to Calibre (%s)", book_id, ", ".join(sorted(fields)))
     else:
         logger.warning("Auto-sync failed for book %s (left pending for manual sync): %s", book_id, out)
@@ -381,21 +401,24 @@ def run_sync(library: str = LIBRARY) -> dict:
     # Calibre's FTS db uses a rollback journal, so a background index rebuild
     # holding it open blocks calibredb from writing (it surfaces as an opaque
     # "fts_db is already in use" / "database is locked"). Ask the indexer to
-    # stand down for the duration of the sync.
-    try:
-        from . import search_index
-        search_index.pause_for_calibre_write()
-    except Exception:
-        search_index = None
+    # stand down for the duration of the sync. The write lock keeps the
+    # auto-sync worker out for the same span — same lock-then-pause order as
+    # _auto_apply_one.
+    with _calibre_write_lock:
+        try:
+            from . import search_index
+            search_index.pause_for_calibre_write()
+        except Exception:
+            search_index = None
 
-    try:
-        return _run_sync(library)
-    finally:
-        if search_index is not None:
-            try:
-                search_index.resume_after_calibre_write()
-            except Exception:
-                pass
+        try:
+            return _run_sync(library)
+        finally:
+            if search_index is not None:
+                try:
+                    search_index.resume_after_calibre_write()
+                except Exception:
+                    pass
 
 
 def _run_sync(library: str) -> dict:
@@ -417,7 +440,10 @@ def _run_sync(library: str) -> dict:
             continue
         ok, out = sync_book(bid, item["fields"], library)
         if ok:
-            overlay.discard(bid)
+            # Value-aware, like the auto path: a field re-edited while this
+            # book's calibredb call was in flight keeps its newer pending value
+            # instead of being dropped by a blanket per-book discard.
+            _discard_applied(bid, item["fields"])
             synced += 1
         else:
             logger.warning("Calibre sync failed for book %s: %s", bid, out)
