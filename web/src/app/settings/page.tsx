@@ -14,6 +14,7 @@ interface SettingsView {
   calibre_server_url?: string | null;
   calibre_server_user?: string | null;
   calibre_server_password_set?: boolean;
+  calibre_auto_sync?: boolean;
 }
 interface EnrichJob {
   running: boolean; total: number; processed: number;
@@ -622,6 +623,47 @@ export default function SettingsPage() {
                 {calSrvMsg.ok ? "✓ " : "✕ "}{calSrvMsg.text}
               </p>
             )}
+
+            {/* Auto-apply. Lives here because whether a server is configured is
+                exactly what decides if this is safe to leave on. */}
+            <div className="mt-5 pt-4" style={{ borderTop: "1px solid var(--ink-muted)" }}>
+              {(() => {
+                // Auto-sync is only offered with a content server: it fires on its
+                // own, so it can't be timed around having Calibre open the way a
+                // manual sync can. The server is what makes it safe.
+                const canAuto = !!settings?.calibre_server_url;
+                return (
+                  <label className={`flex items-start gap-2.5 ${canAuto ? "cursor-pointer" : "cursor-not-allowed"}`}
+                         style={{ opacity: canAuto ? 1 : 0.55 }}>
+                    <input type="checkbox" className="mt-0.5" disabled={!canAuto}
+                      checked={canAuto && (settings?.calibre_auto_sync ?? false)}
+                      onChange={async e => {
+                        const val = e.target.checked;
+                        setSettings(s => (s ? { ...s, calibre_auto_sync: val } : s));
+                        const res = await fetch("/api/settings", {
+                          method: "PUT", headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ calibre_auto_sync: val }),
+                        });
+                        if (!res.ok) setSettings(s => (s ? { ...s, calibre_auto_sync: !val } : s));
+                        else loadSettings();
+                      }} />
+                    <span>
+                      <span style={{ fontFamily: "var(--body)", fontSize: "0.85rem", color: "var(--parchment)" }}>
+                        Apply changes to Calibre automatically
+                      </span>
+                      <span className="block mt-1" style={{ fontFamily: "var(--body)", fontSize: "0.75rem", color: "var(--parchment-dim)", opacity: 0.65 }}>
+                        Edits are written to Calibre as you save them, instead of waiting for the Sync button. If a write fails, the change stays pending and the next manual sync picks it up — nothing is lost. Metadata suggestions from <em>Find missing</em> still wait for your review.
+                      </span>
+                      {!canAuto && (
+                        <span className="block mt-2" style={{ fontFamily: "var(--body)", fontSize: "0.73rem", color: "var(--parchment-dim)", opacity: 0.8 }}>
+                          Needs a content server. Without one, changes go straight to the library folder, which is only safe while Calibre is closed — and auto-sync fires on its own (a KOReader sync overnight will trigger it), so you can&apos;t time it around that. Set a server URL above to enable this.
+                        </span>
+                      )}
+                    </span>
+                  </label>
+                );
+              })()}
+            </div>
           </div>
         )}
 

@@ -13,6 +13,7 @@ import os
 import uuid
 
 from .. import calibre_overlay as overlay
+from .. import calibre_sync
 
 router = APIRouter()
 
@@ -50,6 +51,7 @@ def edit_book(book_id: int, body: CalibreEdit, request: Request):
     if "rating" in fields and fields["rating"] is not None and not (0 <= fields["rating"] <= 5):
         raise HTTPException(status_code=400, detail="Rating must be 0–5")
     overlay.set_edits(book_id, fields)
+    calibre_sync.queue_auto_sync(book_id)  # no-op unless auto-sync is enabled
     return {"ok": True, "book_id": book_id, "fields": list(fields)}
 
 
@@ -268,6 +270,7 @@ def _queue_reading_updates(username, user_id) -> dict:
                 edits[f"custom:{col_date}"] = date_str
             if edits:
                 overlay.set_edits(bid, edits)
+                calibre_sync.queue_auto_sync(bid)
                 queued += 1
     return {"queued": queued, "books_with_progress": len(best)}
 

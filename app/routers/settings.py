@@ -106,6 +106,7 @@ class SettingsView(BaseModel):
     calibre_server_url: Optional[str] = None
     calibre_server_user: Optional[str] = None
     calibre_server_password_set: bool = False
+    calibre_auto_sync: bool = False
 
 
 class SettingsUpdate(BaseModel):
@@ -122,6 +123,7 @@ class SettingsUpdate(BaseModel):
     calibre_server_url: Optional[str] = None
     calibre_server_user: Optional[str] = None
     calibre_server_password: Optional[str] = None  # "" clears it
+    calibre_auto_sync: Optional[bool] = None
 
 
 class TestEmail(BaseModel):
@@ -148,6 +150,7 @@ def get_settings(request: Request):
         calibre_server_url=get_setting(calibre_sync.SETTING_SERVER_URL),
         calibre_server_user=get_setting(calibre_sync.SETTING_SERVER_USER),
         calibre_server_password_set=bool(get_setting(calibre_sync.SETTING_SERVER_PASSWORD)),
+        calibre_auto_sync=calibre_sync.auto_sync_enabled(),
     )
 
 
@@ -164,6 +167,31 @@ def kindle_info(request: Request):
 def update_settings(updates: SettingsUpdate, request: Request):
     _require_admin(request)
     try:
+        # Auto-sync requires the content server. Validate against the URL this
+        # request LEAVES in place, not the one it started with, so enabling both
+        # in a single call still works and clearing the URL still wins.
+        if updates.calibre_server_url is not None:
+            resulting_url = updates.calibre_server_url.strip()
+        else:
+            resulting_url = (get_setting(calibre_sync.SETTING_SERVER_URL) or "").strip()
+
+        if updates.calibre_auto_sync:
+            if not resulting_url:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Automatic syncing needs a Calibre content server. Without one, changes "
+                           "are written straight to the library folder, which is only safe while "
+                           "Calibre is closed — and auto-sync can fire at any time. Set a server "
+                           "URL first.",
+                )
+            set_setting(calibre_sync.SETTING_AUTO_SYNC, "true")
+        elif updates.calibre_auto_sync is not None:
+            set_setting(calibre_sync.SETTING_AUTO_SYNC, "false")
+
+        # Removing the server takes auto-sync down with it, so the stored flag
+        # never disagrees with what the server actually does.
+        if updates.calibre_server_url is not None and not resulting_url:
+            set_setting(calibre_sync.SETTING_AUTO_SYNC, "false")
         if updates.hardcover_token is not None:
             set_setting(HARDCOVER_TOKEN_KEY, updates.hardcover_token.strip() or None)
         if updates.smtp_host is not None:

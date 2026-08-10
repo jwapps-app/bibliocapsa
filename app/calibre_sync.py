@@ -11,7 +11,9 @@ characters need no quoting.
 
 import os
 import re
+import queue
 import logging
+import threading
 import subprocess
 from typing import Optional
 
@@ -246,6 +248,128 @@ def add_upload_to_calibre(rec: dict, library: str = LIBRARY) -> tuple[bool, str]
         return True, out
     except Exception as e:
         return False, str(e)
+
+
+# ── Optional: apply edits to Calibre as they're saved ────────────────────────
+# Off by default, in which case edits accumulate until the deliberate "Sync to
+# Calibre" action, exactly as before. When on, a deliberate edit is pushed to
+# Calibre in the background the moment it's saved.
+#
+# Two properties make this safe to leave on:
+#   * A failed auto-apply changes nothing. The edit stays in the overlay, so the
+#     manual Sync button remains the backstop and no edit is ever lost.
+#   * Writes are serialized through one worker thread. calibredb invocations
+#     never overlap each other, and each one pauses the search indexer the same
+#     way a manual sync does.
+#
+# Enrichment proposals deliberately do NOT auto-apply — those are queued for you
+# to review on the Sync page, and applying them silently would remove the review.
+SETTING_AUTO_SYNC = "calibre_auto_sync"
+
+_auto_q: "queue.Queue[int]" = queue.Queue()
+_auto_worker: Optional[threading.Thread] = None
+_auto_lock = threading.Lock()
+
+
+def auto_sync_enabled() -> bool:
+    """Whether a saved edit should be pushed to Calibre immediately. Default off.
+
+    Requires a configured content server, and deliberately re-checks that here
+    rather than trusting the stored flag. A manual sync is something you time —
+    you close Calibre, then press the button. Auto-sync fires on its own (a
+    KOReader sync at 3am will do it), so writing straight to the library folder
+    could land while Calibre has the library open. Gating on the server means
+    clearing the URL disables auto-sync immediately, with no window where the
+    flag is still on but the safe write path is gone."""
+    try:
+        from .routers.settings import get_setting
+        if not (get_setting(SETTING_AUTO_SYNC) or "").strip().lower() in ("1", "true", "yes"):
+            return False
+        url, _, _ = server_config()
+        return bool(url)
+    except Exception:
+        return False
+
+
+def queue_auto_sync(book_id: int) -> None:
+    """Ask for one book's pending edits to be applied to Calibre in the background.
+
+    Cheap and never raises: the caller is a request handler that has already
+    saved the edit, and auto-apply must not be able to fail that request."""
+    try:
+        if not auto_sync_enabled():
+            return
+        _ensure_auto_worker()
+        _auto_q.put(int(book_id))
+    except Exception:
+        logger.debug("auto-sync enqueue failed for book %s", book_id, exc_info=True)
+
+
+def _ensure_auto_worker() -> None:
+    global _auto_worker
+    with _auto_lock:
+        if _auto_worker is None or not _auto_worker.is_alive():
+            _auto_worker = threading.Thread(target=_auto_loop, name="calibre-auto-sync", daemon=True)
+            _auto_worker.start()
+
+
+def _auto_loop() -> None:
+    while True:
+        book_id = _auto_q.get()
+        taken = 1  # every item taken needs its own task_done(), or join() hangs
+        try:
+            # Coalesce: a burst of edits to the same book (the editor patches
+            # field by field) should be one calibredb call, not one per field.
+            pending_ids = {book_id}
+            while True:
+                try:
+                    pending_ids.add(_auto_q.get_nowait())
+                    taken += 1
+                except queue.Empty:
+                    break
+            for bid in sorted(pending_ids):
+                _auto_apply_one(bid)
+        except Exception:
+            logger.warning("auto-sync worker error", exc_info=True)
+        finally:
+            for _ in range(taken):
+                _auto_q.task_done()
+
+
+def _auto_apply_one(book_id: int) -> None:
+    """Apply one book's pending edits. On any failure the edit is left in the
+    overlay for the manual sync — auto-apply only ever removes work, never data."""
+    from . import calibre_overlay as overlay
+    fields = (overlay.get_edits([book_id]) or {}).get(book_id) or {}
+    if not fields:
+        return
+    if not _existing_book_ids([book_id], LIBRARY):
+        return  # gone from Calibre; the manual sync path handles dropping it
+
+    try:
+        from . import search_index
+        search_index.pause_for_calibre_write()
+    except Exception:
+        search_index = None
+    try:
+        ok, out = sync_book(book_id, fields, LIBRARY)
+    except Exception as e:
+        ok, out = False, str(e)
+    finally:
+        if search_index is not None:
+            try:
+                search_index.resume_after_calibre_write()
+            except Exception:
+                pass
+
+    if ok:
+        # Discard only the fields we actually pushed, so an edit saved while the
+        # calibredb call was in flight isn't dropped along with them.
+        for field in fields:
+            overlay.discard(book_id, field)
+        logger.info("Auto-synced book %s to Calibre (%s)", book_id, ", ".join(sorted(fields)))
+    else:
+        logger.warning("Auto-sync failed for book %s (left pending for manual sync): %s", book_id, out)
 
 
 def run_sync(library: str = LIBRARY) -> dict:

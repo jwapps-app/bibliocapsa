@@ -187,6 +187,8 @@ def _writeback(book_id: int, status, date_read) -> None:
             edits[f"custom:{col_date}"] = date_read
         if edits:
             overlay.set_edits(book_id, edits)
+            from . import calibre_sync
+            calibre_sync.queue_auto_sync(book_id)
     except Exception:
         pass  # write-back is best-effort; the Postgres status above is authoritative
 
