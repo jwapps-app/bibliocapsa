@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { KeyRound, Sparkles, Loader, Loader2, CheckCircle, Eye, EyeOff, Save, XCircle, Users, UserPlus, Lock, Send, Mail, RefreshCw, BookMarked, Wrench, SearchX, Upload, BookPlus } from "lucide-react";
 import { api, type CurrentUser } from "@/lib/api";
 import { KOReaderSettings } from "@/components/KOReaderSettings";
@@ -16,7 +16,7 @@ interface SettingsView {
   calibre_server_password_set?: boolean;
   calibre_auto_sync?: boolean;
   timezone?: string;
-  timezone_default?: string;
+  timezone_configured?: boolean;
 }
 interface EnrichJob {
   running: boolean; total: number; processed: number;
@@ -113,37 +113,6 @@ export default function SettingsPage() {
     }).catch(() => {});
   };
 
-  // ── Time zone ──
-  // The list comes from the browser's own tz database (Intl), which is the
-  // same IANA naming the server validates against. The current zone is always
-  // included even if this browser's list somehow lacks it, so the select can
-  // never show a blank.
-  const [tzMsg, setTzMsg] = useState<{ ok: boolean; text: string } | null>(null);
-  const browserTz = useMemo(() => {
-    try { return Intl.DateTimeFormat().resolvedOptions().timeZone || null; } catch { return null; }
-  }, []);
-  const timezones = useMemo(() => {
-    let list: string[] = [];
-    try { list = (Intl as any).supportedValuesOf?.("timeZone") ?? []; } catch {}
-    const cur = settings?.timezone;
-    if (!list.includes("UTC")) list = ["UTC", ...list];
-    if (cur && !list.includes(cur)) list = [cur, ...list];
-    return list;
-  }, [settings?.timezone]);
-  const saveTimezone = async (tz: string) => {
-    const prev = settings?.timezone;
-    setSettings(s => (s ? { ...s, timezone: tz } : s));
-    setTzMsg(null);
-    const res = await fetch("/api/settings", {
-      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ timezone: tz }),
-    }).catch(() => null);
-    if (res?.ok) { setTzMsg({ ok: true, text: "Saved" }); setTimeout(() => setTzMsg(null), 2000); loadSettings(); }
-    else {
-      setSettings(s => (s ? { ...s, timezone: prev ?? "UTC" } : s));
-      const d = await res?.json().catch(() => null);
-      setTzMsg({ ok: false, text: d?.detail ?? "Could not save time zone" });
-    }
-  };
   const runReadingSync = async () => {
     setReadingBusy(true); setReadingMsg(null);
     try {
@@ -614,27 +583,21 @@ export default function SettingsPage() {
               Short sessions are dropped first, then each book's total is recalculated from what remains — so totals, the activity chart and session counts always agree.
             </p>
 
-            {/* Time zone — where a "day" begins for every date-bucketed figure */}
+            {/* Time zone — read-only. Configured ONE way, like every container:
+                TZ in docker-compose. Shown here so a UTC misfiling reads as a
+                config gap rather than a mystery bug. */}
             <div className="mt-5 pt-4" style={{ borderTop: "1px solid var(--ink-muted)" }}>
-              <label className="block">
-                <span className="block uppercase tracking-widest mb-1.5" style={{ fontFamily: "var(--mono)", fontSize: "0.55rem", color: "var(--parchment-dim)", opacity: 0.6 }}>Time zone</span>
-                <div className="flex flex-wrap items-center gap-2">
-                  <select className="bc-input" style={{ maxWidth: "20rem" }} value={settings?.timezone ?? "UTC"}
-                    onChange={e => saveTimezone(e.target.value)}>
-                    {timezones.map(z => <option key={z} value={z}>{z.replace(/_/g, " ")}</option>)}
-                  </select>
-                  {browserTz && browserTz !== settings?.timezone && (
-                    <button onClick={() => saveTimezone(browserTz)}
-                      className="px-2.5 py-1.5 rounded-sm border transition-colors hover:border-[var(--gold)]"
-                      style={{ fontFamily: "var(--mono)", fontSize: "0.68rem", color: "var(--gold-light)", borderColor: "var(--gold-dim)", background: "rgba(107,78,30,0.2)" }}>
-                      Use this device&apos;s: {browserTz.replace(/_/g, " ")}
-                    </button>
-                  )}
-                  {tzMsg && <span style={{ fontFamily: "var(--mono)", fontSize: "0.68rem", color: tzMsg.ok ? "var(--gold-light)" : "#d88" }}>{tzMsg.text}</span>}
-                </div>
-              </label>
+              <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                <span className="uppercase tracking-widest" style={{ fontFamily: "var(--mono)", fontSize: "0.55rem", color: "var(--parchment-dim)", opacity: 0.6 }}>Time zone</span>
+                <span style={{ fontFamily: "var(--mono)", fontSize: "0.85rem", color: settings?.timezone_configured ? "var(--gold-light)" : "var(--parchment)" }}>
+                  {(settings?.timezone ?? "UTC").replace(/_/g, " ")}
+                </span>
+                {!settings?.timezone_configured && (
+                  <span style={{ fontFamily: "var(--mono)", fontSize: "0.68rem", color: "#e0c080" }}>TZ not set — defaulting to UTC</span>
+                )}
+              </div>
               <p className="mt-2" style={{ fontFamily: "var(--body)", fontSize: "0.75rem", color: "var(--parchment-dim)", opacity: 0.55 }}>
-                Decides where each day begins for the statistics — the heatmap, the last-7-days panel — and the date stamped on a book when you mark it read. The server otherwise runs on {settings?.timezone_default ?? "UTC"}, where midnight is early evening in the Americas, so a chapter read at 8 pm would be filed under tomorrow while your KOReader files it under today. Match this to your reader and the two agree. Takes effect immediately.
+                Decides where each day begins for the statistics — the heatmap, the last-7-days panel — and the date stamped on a book when it&apos;s marked read. On UTC, midnight is early evening in the Americas, so a chapter read at 8 pm is filed under tomorrow while your KOReader files it under today. Set <code style={{ fontFamily: "var(--mono)" }}>TZ</code> (e.g. <code style={{ fontFamily: "var(--mono)" }}>America/Chicago</code>) on the backend container in docker-compose and restart it.
               </p>
             </div>
           </div>

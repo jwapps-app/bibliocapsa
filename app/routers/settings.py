@@ -108,9 +108,10 @@ class SettingsView(BaseModel):
     calibre_server_user: Optional[str] = None
     calibre_server_password_set: bool = False
     calibre_auto_sync: bool = False
-    # Server local time zone: decides where a 'day' begins (stats, read dates)
+    # Server local time zone (read-only; set via TZ on the container). Decides
+    # where a 'day' begins for stats and read dates.
     timezone: str = "UTC"
-    timezone_default: str = "UTC"   # what clearing falls back to (container TZ)
+    timezone_configured: bool = False
 
 
 class SettingsUpdate(BaseModel):
@@ -128,7 +129,6 @@ class SettingsUpdate(BaseModel):
     calibre_server_user: Optional[str] = None
     calibre_server_password: Optional[str] = None  # "" clears it
     calibre_auto_sync: Optional[bool] = None
-    timezone: Optional[str] = None  # IANA name; "" clears to the container default
 
 
 class TestEmail(BaseModel):
@@ -157,7 +157,7 @@ def get_settings(request: Request):
         calibre_server_password_set=bool(get_setting(calibre_sync.SETTING_SERVER_PASSWORD)),
         calibre_auto_sync=calibre_sync.auto_sync_enabled(),
         timezone=tzmod.current(),
-        timezone_default=tzmod.env_default(),
+        timezone_configured=tzmod.is_configured(),
     )
 
 
@@ -199,13 +199,6 @@ def update_settings(updates: SettingsUpdate, request: Request):
         # never disagrees with what the server actually does.
         if updates.calibre_server_url is not None and not resulting_url:
             set_setting(calibre_sync.SETTING_AUTO_SYNC, "false")
-        if updates.timezone is not None:
-            tz = updates.timezone.strip()
-            if tz and not tzmod.is_valid(tz):
-                raise HTTPException(status_code=400,
-                                    detail=f"Unknown time zone: {tz!r}. Use an IANA name like America/Chicago.")
-            set_setting(tzmod.SETTING_TIMEZONE, tz or None)
-            tzmod.apply(tz or None)   # takes effect immediately, no restart
         if updates.hardcover_token is not None:
             set_setting(HARDCOVER_TOKEN_KEY, updates.hardcover_token.strip() or None)
         if updates.smtp_host is not None:
