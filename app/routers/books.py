@@ -49,12 +49,25 @@ def _merge_overlay(items):
                     it.community_rating = ratings[it.id]
                 st = rstat.get(it.id) or colstat.get(it.id)
                 if st:
-                    it.reading_status = st["status"]
+                    status = st["status"]
                     date_read = st.get("date_read") or ""
-                    if not date_read:
-                        col = colstat.get(it.id)
-                        if col and st["status"] == "read":
+                    # A Calibre-column entry exists ONLY when Calibre's read
+                    # flag is true (calibre_column_statuses filters value=1),
+                    # so its presence means "read" regardless of what our own
+                    # store says. The store can lag: a progress sync leaves a
+                    # book at "reading" with no date after it was finished
+                    # and dated in Calibre. Gating this on the STORED status
+                    # being "read" was the bug — the book was sorted first by
+                    # its Calibre date yet reported as "reading" with an
+                    # empty date, and iOS (which sorts locally) sank it to
+                    # the bottom. Same rule as _read_filter_clause, which
+                    # already counts a book read from either source.
+                    col = colstat.get(it.id)
+                    if col:
+                        status = "read"
+                        if not date_read:
                             date_read = col.get("date_read") or ""
+                    it.reading_status = status
                     it.date_read = date_read
     return items
 
@@ -601,12 +614,19 @@ def get_book(book_id: int, request: Request):
         from .. import community, calibre_read
         detail.community_rating = community.get_calibre_ratings([book_id]).get(book_id)
         st = calibre_read.get_status(book_id)
-        detail.reading_status = st["status"]
+        status = st["status"]
         date_read = st.get("date_read") or ""
-        if not date_read and st["status"] == "read":
-            # Same fallback as the list payload: the date lives in the Calibre
-            # Date Read column when the store's record has none.
+        if status != "read" or not date_read:
+            # Same rule as the list payload: a Calibre-column entry means
+            # Calibre's read flag is true, so it wins over a stale stored
+            # status and supplies the date when the store has none. Skipped
+            # only when the store already says read WITH a date, so the
+            # detail page can never disagree with the list.
             col = calibre_read.calibre_column_statuses([book_id]).get(book_id)
-            date_read = (col or {}).get("date_read") or ""
+            if col:
+                status = "read"
+                if not date_read:
+                    date_read = col.get("date_read") or ""
+        detail.reading_status = status
         detail.date_read = date_read
         return detail
