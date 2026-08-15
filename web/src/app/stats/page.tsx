@@ -36,6 +36,11 @@ export default function StatsPage() {
           From your KOReader reading activity (synced via WebDAV).
         </p>
 
+        {/* Last 7 days — first thing on the page, and ABOVE the period selector
+            on purpose: it's always the trailing week, never the selected period,
+            so it shouldn't sit under a control it doesn't obey. */}
+        {data?.week && <WeekProgress week={data.week} />}
+
         {/* Reading goal — independent of KOReader stats (counts your read history) */}
         <ReadingGoal />
 
@@ -80,8 +85,6 @@ export default function StatsPage() {
                 </div>
               ))}
             </div>
-
-            {data.week && <WeekProgress week={data.week} />}
 
             <Heatmap activity={data.activity} />
 
