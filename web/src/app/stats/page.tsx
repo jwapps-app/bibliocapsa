@@ -215,7 +215,7 @@ type Week = { days: WeekDay[]; total_seconds: number; total_pages: number;
 function WeekProgress({ week }: { week: Week }) {
   const max = Math.max(1, ...week.days.map(d => d.seconds));
   const stat = (label: string, val: string) => (
-    <div key={label} className="min-w-0">
+    <div key={label} className="min-w-0 text-center">
       <div style={{ fontFamily: "var(--serif)", fontSize: "1.15rem", color: "var(--parchment)" }}>{val}</div>
       <div className="uppercase tracking-widest truncate" style={{ fontFamily: "var(--mono)", fontSize: "0.52rem", color: "var(--parchment-dim)", opacity: 0.6 }}>{label}</div>
     </div>
