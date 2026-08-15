@@ -28,6 +28,7 @@ services:
       # arrived over HTTPS — so IP/HTTP users aren't locked out, while HTTPS users
       # still get a Secure cookie. Force with "true"/"false" if you must.
       COOKIE_SECURE: "${COOKIE_SECURE:-auto}"
+      TZ: "${TZ:-UTC}"
     depends_on:
       db:
         condition: service_healthy

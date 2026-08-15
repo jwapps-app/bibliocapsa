@@ -48,6 +48,10 @@ async def lifespan(app: FastAPI):
         init_postgres()
     except Exception as e:
         logger.warning(f"PostgreSQL not initialized: {e}")
+    # Local time zone (Settings > Reading statistics, else the container's TZ).
+    # Decides where a "day" begins for stats, read dates and logs — see timezone.py.
+    from . import timezone as tzmod
+    logger.info("Time zone: %s", tzmod.apply_from_settings())
     # Bring the BM25 search index in sync with Calibre, in the background so it
     # never delays startup or pegs the CPU (incremental: only changed books).
     try:

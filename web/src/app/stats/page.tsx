@@ -81,6 +81,8 @@ export default function StatsPage() {
               ))}
             </div>
 
+            {data.week && <WeekProgress week={data.week} />}
+
             <Heatmap activity={data.activity} />
 
             {/* Top books */}
@@ -190,6 +192,72 @@ function ReadingGoal() {
             Set a {year} reading goal{count > 0 ? ` — you've read ${count} so far` : ""} →
           </button>
         )}
+      </div>
+    </div>
+  );
+}
+
+type WeekDay = { date: string; weekday: string; seconds: number; pages: number };
+type Week = { days: WeekDay[]; total_seconds: number; total_pages: number;
+              avg_seconds_per_day: number; avg_pages_per_day: number };
+
+/**
+ * KOReader's "Last week / Week progress" panel: the trailing 7 days, today at
+ * the top, one bar per day scaled to the busiest day. Always the last 7 days
+ * regardless of the period selector above — same as on the device. Day
+ * boundaries and weekday names come from the server so they can't drift from
+ * how the activity was bucketed. (The device's "Session" figures are local to
+ * the reader and never sync, so they're deliberately not shown here.)
+ */
+function WeekProgress({ week }: { week: Week }) {
+  const max = Math.max(1, ...week.days.map(d => d.seconds));
+  const stat = (label: string, val: string) => (
+    <div key={label} className="min-w-0">
+      <div style={{ fontFamily: "var(--serif)", fontSize: "1.15rem", color: "var(--parchment)" }}>{val}</div>
+      <div className="uppercase tracking-widest truncate" style={{ fontFamily: "var(--mono)", fontSize: "0.52rem", color: "var(--parchment-dim)", opacity: 0.6 }}>{label}</div>
+    </div>
+  );
+
+  return (
+    <div className="rounded-sm p-5 mb-8 border" style={{ background: "var(--ink-soft)", borderColor: "var(--ink-muted)" }}>
+      <div className="uppercase tracking-widest mb-3" style={{ fontFamily: "var(--mono)", fontSize: "0.6rem", color: "var(--parchment-dim)", opacity: 0.5 }}>
+        Last 7 days
+      </div>
+
+      {/* Week totals — the device's "Last week" row */}
+      <div className="grid grid-cols-4 gap-3 mb-5">
+        {stat("Pages", week.total_pages.toLocaleString())}
+        {stat("Time", fmtH(week.total_seconds))}
+        {stat("Pages / day", String(week.avg_pages_per_day))}
+        {stat("Time / day", fmtH(week.avg_seconds_per_day))}
+      </div>
+
+      {/* Week progress — today first, like the device */}
+      <div className="space-y-2">
+        {week.days.map((d, i) => {
+          const today = i === 0;
+          const pct = d.seconds > 0 ? Math.max(2, (d.seconds / max) * 100) : 0;
+          return (
+            <div key={d.date} className="grid items-center gap-3" style={{ gridTemplateColumns: "6.5rem 1fr auto" }}>
+              <div className="truncate" title={d.date}
+                   style={{ fontFamily: "var(--mono)", fontSize: "0.68rem",
+                            color: today ? "var(--gold-light)" : "var(--parchment-dim)", opacity: today ? 1 : 0.8 }}>
+                {today ? "Today" : d.weekday.slice(0, 3)}
+                <span style={{ opacity: 0.5, marginLeft: "0.4em" }}>{d.date.slice(5)}</span>
+              </div>
+              <div className="h-2.5 rounded-sm overflow-hidden" style={{ background: "var(--ink-muted)" }}>
+                <div className="h-full rounded-sm transition-[width]"
+                     style={{ width: `${pct}%`, background: today ? "var(--gold)" : "rgba(201,147,58,0.55)" }} />
+              </div>
+              <div className="text-right whitespace-nowrap"
+                   style={{ fontFamily: "var(--mono)", fontSize: "0.68rem",
+                            color: d.seconds ? "var(--parchment)" : "var(--parchment-dim)", opacity: d.seconds ? 0.9 : 0.4 }}>
+                {d.seconds ? fmtH(d.seconds) : "—"}
+                <span style={{ color: "var(--parchment-dim)", opacity: 0.6, marginLeft: "0.5em" }}>{d.pages ? `${d.pages} pp` : ""}</span>
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

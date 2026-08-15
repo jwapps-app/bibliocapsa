@@ -206,7 +206,7 @@ def _queue_reading_updates(username, user_id) -> dict:
     from .. import calibre_custom, calibre_read, read_history
     from .settings import get_setting
     from ..database import get_conn
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     col_read = get_setting("reading_col_read")
     col_prog = get_setting("reading_col_progress")
@@ -250,7 +250,10 @@ def _queue_reading_updates(username, user_id) -> dict:
             frac = pct if pct <= 1 else pct / 100.0
             pct100 = max(0, min(100, round(frac * 100)))
             read = frac >= 0.99
-            date_str = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+            # Local date, so a book finished at 8 pm lands on TODAY in the
+            # configured zone (Settings > Reading statistics), matching the
+            # device and the stats — not on tomorrow's UTC date.
+            date_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
             # Mirror into Bibliocapsa's own read-status store so KOReader-read
             # books show in the unified Read/Unread filter (read or in-progress).
             cur_status = calibre_read.get_status(bid).get("status")

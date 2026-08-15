@@ -297,6 +297,43 @@ def stats_summary(request: Request, days: int = 0):
         "total_seconds": data["total_seconds"], "total_pages": data["total_pages"],
         "book_count": data["book_count"], "days_read": data["days_read"],
         "activity": data["activity"], "books": out,
+        "week": _trailing_week(data["activity"]),
+    }
+
+
+def _trailing_week(activity: list) -> dict:
+    """The last 7 calendar days (today first), KOReader-style — the same
+    'Last week / Week progress' panel the device shows. Always the trailing
+    week regardless of the dashboard's period selector, exactly as on the
+    device.
+
+    Built here rather than in the client so the day boundary comes from ONE
+    place: `activity` is bucketed by the server's local date, so 'today' and
+    the weekday names must use the same clock. (A client parsing '2026-08-15'
+    gets UTC midnight, which US zones render as Friday — the classic off-by-
+    one — so the weekday travels with the data.) Averages divide by 7, as the
+    device does, not by days actually read."""
+    import datetime
+    today = datetime.date.today()
+    by = {a["date"]: a for a in activity}
+    days = []
+    for i in range(7):
+        d = today - datetime.timedelta(days=i)
+        a = by.get(d.isoformat()) or {}
+        days.append({
+            "date": d.isoformat(),
+            "weekday": d.strftime("%A"),
+            "seconds": int(a.get("seconds") or 0),
+            "pages": int(a.get("pages") or 0),
+        })
+    total_seconds = sum(x["seconds"] for x in days)
+    total_pages = sum(x["pages"] for x in days)
+    return {
+        "days": days,
+        "total_seconds": total_seconds,
+        "total_pages": total_pages,
+        "avg_seconds_per_day": total_seconds // 7,
+        "avg_pages_per_day": total_pages // 7,
     }
 
 
