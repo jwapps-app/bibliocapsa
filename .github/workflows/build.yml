@@ -6,6 +6,13 @@ name: Build & publish images
 # local `docker login` / write:packages PAT is needed — `git push` ships a
 # release and the deploy host just pulls :latest. Matches the workflow used by
 # the other jwapps-app self-hosted projects (colloqui, notabula, kryptovox).
+#
+# Multi-arch WITHOUT emulation: each image is built once per architecture on a
+# runner OF that architecture (amd64 on ubuntu-latest, arm64 on GitHub's native
+# ARM runners, free for public repos), pushed by digest, and a final job stitches
+# the two digests into one manifest list per image and applies the tags. This
+# replaced QEMU-emulated arm64 builds, which took ~15 min when they worked and
+# hung outright in `npm ci` twice in a row (v1.21.3) when they didn't.
 
 on:
   push:
@@ -57,35 +64,43 @@ jobs:
         working-directory: web
         run: npm run build
 
+  # ── Stage 1: one native build per (image × architecture), pushed by digest ──
   build-images:
     needs: [backend-checks, web-checks]
     # Publish on version TAGS only. Pushing a release used to trigger two full
     # matrix runs (the main push and the tag push) that built identical images
-    # and thrashed the same BuildKit cache scope — turning a ~14 min job into
-    # 50+. Gates still run on every push to main; images come from tags.
+    # and thrashed the same BuildKit cache scope. Gates still run on every push
+    # to main; images come from tags.
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     strategy:
       fail-fast: false   # one image failing must not cancel the others
       matrix:
+        image: [backend, web, proxy]
+        platform: [linux/amd64, linux/arm64]
         include:
-          - name: backend
+          # per-image build inputs
+          - image: backend
             context: .
             dockerfile: ./Dockerfile
-          - name: web
+          - image: web
             context: ./web
             dockerfile: ./web/Dockerfile
-          - name: proxy
+          - image: proxy
             context: .
             dockerfile: ./Dockerfile.proxy
+          # per-platform runner (native — no QEMU)
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            arch: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      # arm64 layers build under QEMU emulation — slower, but the images then run
-      # natively on both x86_64 hosts and the Apple-Silicon deploy Mac.
-      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
@@ -96,18 +111,69 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           # -> ghcr.io/jwapps-app/bibliocapsa-{backend,web,proxy}
-          images: ${{ env.REGISTRY }}/${{ github.repository }}-${{ matrix.name }}
+          images: ${{ env.REGISTRY }}/${{ github.repository }}-${{ matrix.image }}
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # No tags here: the per-arch image is pushed by digest only, and the
+          # publish job below attaches the tags to the merged manifest list.
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ github.repository }}-${{ matrix.image }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}
+          cache-to: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }},mode=max
+      - name: Export digest
+        run: |
+          mkdir -p "${{ runner.temp }}/digests"
+          digest="${{ steps.build.outputs.digest }}"
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.image }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # ── Stage 2: merge the per-arch digests into one tagged manifest per image ──
+  publish-manifests:
+    needs: build-images
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        image: [backend, web, proxy]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-${{ matrix.image }}-*
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}-${{ matrix.image }}
           tags: |
             type=raw,value=latest
             type=semver,pattern={{version}}
             type=sha,format=short
-      - uses: docker/build-push-action@v6
-        with:
-          context: ${{ matrix.context }}
-          file: ${{ matrix.dockerfile }}
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.name }}
-          cache-to: type=gha,scope=${{ matrix.name }},mode=max
+      - name: Create the manifest list and push the tags
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          # Both arch digests must be present, or we'd publish a one-arch "latest".
+          n=$(ls | wc -l); if [ "$n" -ne 2 ]; then echo "expected 2 digests, found $n"; ls; exit 1; fi
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY }}/${{ github.repository }}-${{ matrix.image }}@sha256:%s ' *)
+      - name: Inspect
+        run: docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ github.repository }}-${{ matrix.image }}:${{ steps.meta.outputs.version }}
