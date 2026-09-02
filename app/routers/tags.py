@@ -4,7 +4,7 @@ from fastapi import APIRouter, Query, Request
 from typing import Optional
 from ..database import get_conn
 from ..schemas import TagDetail
-from .. import access
+from .. import access, ttlcache
 
 router = APIRouter()
 
@@ -16,6 +16,12 @@ def list_tags(
     page: int = Query(1, ge=1),
     page_size: int = Query(200, ge=1, le=5000),
 ):
+    allowed = access.restriction_for_request(request)
+    key = ("tags", ttlcache.calibre_marker(), ttlcache.allowed_key(allowed), search, page, page_size)
+    return ttlcache.get_or_set(key, 60, lambda: _list_tags(allowed, search, page, page_size))
+
+
+def _list_tags(allowed, search, page, page_size):
     with get_conn() as conn:
         conditions = ["1=1"]
         params: list = []
@@ -24,7 +30,6 @@ def list_tags(
             params.append(f"%{search}%")
 
         # Restricted members only see their allowed genres.
-        allowed = access.restriction_for_request(request)
         if allowed is not None:
             qs = ",".join("?" * len(allowed))
             conditions.append(f"LOWER(t.name) IN ({qs})")

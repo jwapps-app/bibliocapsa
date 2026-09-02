@@ -563,9 +563,16 @@ def list_shelves(request: Request):
             # Smart shelves have no stored membership — COUNT them (never resolve
             # full book lists just for a sidebar badge).
             if r["is_smart"] and r["smart_rules"]:
+                # The sidebar asks for every smart shelf's badge on every page.
+                # Cache per (rules, user, allow-list, library change marker).
+                from .. import ttlcache
+                import json as _json
+                rules = dict(r["smart_rules"])
+                key = ("smart-count", ttlcache.calibre_marker(), ttlcache.allowed_key(allowed),
+                       username, _json.dumps(rules, sort_keys=True, default=str))
                 try:
-                    count = _count_smart_shelf(dict(r["smart_rules"]),
-                                               username=username, allowed=allowed)
+                    count = ttlcache.get_or_set(
+                        key, 30, lambda: _count_smart_shelf(rules, username=username, allowed=allowed))
                 except Exception:
                     count = 0
             result.append(Shelf(

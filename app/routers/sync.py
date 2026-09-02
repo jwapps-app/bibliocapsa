@@ -5,13 +5,16 @@ Returns all books modified after the given timestamp.
 On first sync (no since param), returns everything.
 """
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Query, Request, HTTPException
 from typing import Optional
 from datetime import datetime, timezone
 from ..database import get_conn
 from ..schemas import SyncResponse
-from ..queries import row_to_detail
+from ..queries import details_for_rows, fetch_ownership_map
 from .. import access
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -23,6 +26,13 @@ def sync(
         None,
         description="ISO 8601 timestamp. Returns books modified after this time. "
                     "Omit for full sync.",
+    ),
+    limit: Optional[int] = Query(
+        None, ge=1, le=5000,
+        description="Optional page size. Omitted = everything, as before (the "
+                    "iOS app's existing behaviour). When set, the response is "
+                    "ordered by last_modified and `until` is the last item's "
+                    "timestamp, so the next call can pass it as `since`.",
     ),
 ):
     base_url = str(request.base_url).rstrip("/")
@@ -40,22 +50,45 @@ def sync(
         params += list(pp)
     where = ("WHERE " + " AND ".join(conds)) if conds else ""
 
+    lim = f" LIMIT {int(limit) + 1}" if limit else ""
     with get_conn() as conn:
         rows = conn.execute(
             f"""
             SELECT b.id, b.title, b.sort, b.pubdate, b.last_modified, b.timestamp,
                    b.has_cover, b.uuid, b.path, b.series_index, b.author_sort
             FROM books b {where}
-            ORDER BY b.last_modified ASC
+            ORDER BY b.last_modified ASC{lim}
             """,
             params,
         ).fetchall()
+        truncated = bool(limit) and len(rows) > limit
+        if truncated:
+            rows = rows[:limit]
 
-        items = [row_to_detail(conn, row, base_url) for row in rows]
+        # One ownership query for the whole batch. If Postgres is down this is
+        # a hard error: the per-book builder used to substitute defaults and
+        # return 200, and the client then persisted blank ownership and
+        # advanced its cursor past those books.
+        try:
+            ownership = fetch_ownership_map([r["id"] for r in rows])
+        except Exception as e:
+            logger.warning("sync: ownership lookup failed: %s", e)
+            raise HTTPException(status_code=503, detail="Database unavailable; retry the sync")
+
+        # Batched: one query per related table instead of 8 per book plus a
+        # Postgres round trip each (a full sync of ~7,000 books was ~56,000
+        # SQLite queries). Output is field-for-field identical.
+        items = details_for_rows(conn, rows, base_url, ownership)
+
+    # With a page limit, `until` must not skip books: point it at the last
+    # returned book's own timestamp so the next `since` resumes exactly there.
+    until = now
+    if truncated and items and items[-1].last_modified:
+        until = items[-1].last_modified
 
     return SyncResponse(
         since=since,
-        until=now,
+        until=until,
         total=len(items),
         items=items,
     )

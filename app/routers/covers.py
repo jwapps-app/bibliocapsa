@@ -9,7 +9,7 @@ cover changes (mtime check), so a page of grid thumbnails is ~1 MB instead.
 """
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 import logging
 import os
 
@@ -79,8 +79,16 @@ def get_cover(book_id: int, request: Request,
         if thumb:
             serve_path = thumb
 
-    return FileResponse(
-        serve_path,
-        media_type="image/jpeg",
-        headers={"Cache-Control": "private, max-age=86400"},  # access-controlled: no shared caches
-    )
+    # Conditional requests: Starlette's FileResponse sets an ETag but does not
+    # honour If-None-Match, so once max-age lapsed every thumbnail on a page was
+    # re-downloaded in full. Answer 304 when the client already has this file.
+    try:
+        st = os.stat(serve_path)
+        etag = f'"{st.st_mtime_ns:x}-{st.st_size:x}"'
+    except OSError:
+        raise HTTPException(status_code=404, detail="No cover available")
+    headers = {"Cache-Control": "private, max-age=86400", "ETag": etag}  # access-controlled: no shared caches
+    inm = request.headers.get("if-none-match")
+    if inm and etag in [t.strip() for t in inm.split(",")]:
+        return Response(status_code=304, headers=headers)
+    return FileResponse(serve_path, media_type="image/jpeg", headers=headers)

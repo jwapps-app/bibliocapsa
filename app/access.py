@@ -42,13 +42,22 @@ def restriction_for_request(request) -> Optional[set]:
 
 # ── Calibre (SQLite) ──────────────────────────────────────────────────────────
 def calibre_predicate(allowed: Optional[set], alias: str = "b"):
-    """EXISTS clause: the book has a tag whose name is in the allow-list."""
+    """Predicate: the book has a tag whose name is in the allow-list.
+
+    Deliberately NON-correlated. The previous form was a correlated
+    EXISTS(... WHERE _btl.book = b.id AND LOWER(name) IN (...)), which SQLite
+    evaluated once per candidate row -- an index range on the link table plus
+    a LOWER() per tag, for every row of a list, count or feed, and two to four
+    times per page load for a restricted member. This shape resolves the
+    allowed tag ids once, then the allowed book ids once (both materialised as
+    ephemeral indexes), and the outer query is a plain IN lookup.
+    Same semantics: allowed if ANY of the book's tags is on the list."""
     if allowed is None:
         return None, []
     qs = ",".join("?" * len(allowed))
     sql = (
-        f"EXISTS (SELECT 1 FROM books_tags_link _btl JOIN tags _t ON _t.id = _btl.tag "
-        f"WHERE _btl.book = {alias}.id AND LOWER(_t.name) IN ({qs}))"
+        f"{alias}.id IN (SELECT _btl.book FROM books_tags_link _btl "
+        f"WHERE _btl.tag IN (SELECT _t.id FROM tags _t WHERE LOWER(_t.name) IN ({qs})))"
     )
     return sql, list(allowed)
 

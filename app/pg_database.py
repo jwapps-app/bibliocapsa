@@ -13,7 +13,7 @@ _DATABASE_URL: str | None = None
 
 
 def get_database_url() -> str:
-    return (
+    url = (
         os.getenv("DATABASE_URL")
         or f"postgresql://{os.getenv('POSTGRES_USER', 'bibliocapsa')}:"
            f"{os.getenv('POSTGRES_PASSWORD', 'bibliocapsa')}@"
@@ -21,6 +21,15 @@ def get_database_url() -> str:
            f"{os.getenv('POSTGRES_PORT', '5432')}/"
            f"{os.getenv('POSTGRES_DB', 'bibliocapsa')}"
     )
+    # libpq's defaults are an UNBOUNDED connect and no keepalives, so a hung or
+    # paused Postgres held every request that needed a connection forever.
+    # Bound the handshake and detect dead sockets; leave any explicit values
+    # in DATABASE_URL alone.
+    if "connect_timeout=" not in url:
+        url += ("&" if "?" in url else "?") + "connect_timeout=5"
+    if "keepalives=" not in url:
+        url += "&keepalives=1&keepalives_idle=30&keepalives_interval=10&keepalives_count=3"
+    return url
 
 
 # ── Connection pool ───────────────────────────────────────────────────────────
@@ -31,7 +40,8 @@ def get_database_url() -> str:
 # rolls back any open transaction and returns the connection to the pool.
 
 _pool = None
-_pool_lock = None
+import threading as _threading
+_pool_lock = _threading.Lock()
 
 
 class _PooledConn:
@@ -83,17 +93,21 @@ def get_pg():
     import psycopg2
     from psycopg2.extras import RealDictCursor
 
-    if _pool_lock is None:
-        _pool_lock = threading.Lock()
     if _pool is None:
         with _pool_lock:
             if _pool is None:
                 from psycopg2 import pool as _pgpool
                 maxconn = int(os.getenv("PG_POOL_MAX", "15"))
+                # psycopg2 keeps a returned connection only while the idle set
+                # is smaller than minconn -- past that it CLOSES it. With the
+                # old minconn=1 every concurrent checkout beyond one (a page of
+                # 48 cover requests, say) was a fresh TCP + SCRAM handshake torn
+                # down on return. Keep a real working set idle.
+                minconn = max(1, min(maxconn, int(os.getenv("PG_POOL_MIN", "8"))))
                 _pool = _pgpool.ThreadedConnectionPool(
-                    1, maxconn, get_database_url(), cursor_factory=RealDictCursor
+                    minconn, maxconn, get_database_url(), cursor_factory=RealDictCursor
                 )
-                logger.info("PostgreSQL connection pool ready (max=%d)", maxconn)
+                logger.info("PostgreSQL connection pool ready (min=%d, max=%d)", minconn, maxconn)
     try:
         conn = _pool.getconn()
         if conn.closed:  # server restarted / stale — discard and take a fresh one

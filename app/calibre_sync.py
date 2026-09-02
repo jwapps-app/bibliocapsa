@@ -192,32 +192,50 @@ def _format_custom(val) -> str:
     return str(val)
 
 
-def sync_book(book_id: int, fields: dict, library: str = LIBRARY) -> tuple[bool, str]:
-    """Apply one book's pending edits via calibredb. Standard fields go through
-    set_metadata; custom columns (`custom:<label>`) through set_custom."""
+class SyncUnreachable(Exception):
+    """The Calibre content server could not be reached at all -- every further
+    book in this run would fail the same way, so the run stops here."""
+
+
+def _is_unreachable(out: str) -> bool:
+    low = (out or "").lower()
+    return any(k in low for k in ("connection refused", "could not connect", "timed out",
+                                  "name or service not known", "failed to establish"))
+
+
+def sync_book(book_id: int, fields: dict, library: str = LIBRARY,
+              valid_labels: Optional[set] = None) -> tuple[bool, str]:
+    """Apply one book's pending edits in ONE calibredb invocation.
+
+    Every calibredb call is a full Calibre process start (~1-2 s locally, more
+    through the content server). Custom columns used to go through a separate
+    `set_custom` call each, so a book with the three reading columns mapped
+    cost four processes. `set_metadata --field '#label:value'` sets custom
+    columns in the same call as the standard fields.
+
+    `valid_labels` may be passed by a caller syncing many books so the column
+    list is read from Calibre once per run rather than once per book."""
     std = {k: v for k, v in fields.items() if not k.startswith("custom:")}
     custom = {k[len("custom:"):]: v for k, v in fields.items() if k.startswith("custom:")}
-    outputs = []
+    notes = []
 
     field_args = _field_args(std)
-    if field_args:
-        ok, out = _run([CALIBREDB, "set_metadata", str(book_id), *field_args, *_target_args(library)])
-        if not ok:
-            return False, _explain(out)
-        outputs.append(out)
+    if custom:
+        if valid_labels is None:
+            valid_labels = _valid_custom_labels(library)
+        for label, val in custom.items():
+            # Skip edits for columns deleted/renamed in Calibre — don't fail the book.
+            if valid_labels is not None and label not in valid_labels:
+                notes.append(f"skipped #{label} (no such column)")
+                continue
+            field_args += ["--field", f"#{label}:{_format_custom(val)}"]
 
-    valid_labels = _valid_custom_labels(library)
-    for label, val in custom.items():
-        # Skip edits for columns deleted/renamed in Calibre — don't fail the book.
-        if valid_labels is not None and label not in valid_labels:
-            outputs.append(f"skipped #{label} (no such column)")
-            continue
-        ok, out = _run([CALIBREDB, "set_custom", label, str(book_id), _format_custom(val), *_target_args(library)])
-        if not ok:
-            return False, _explain(out)
-        outputs.append(out)
-
-    return True, (" | ".join(outputs) or "no-op")
+    if not field_args:
+        return True, (" | ".join(notes) or "no-op")
+    ok, out = _run([CALIBREDB, "set_metadata", str(book_id), *field_args, *_target_args(library)])
+    if not ok:
+        return False, _explain(out)
+    return True, " | ".join([out, *notes])
 
 
 def add_upload_to_calibre(rec: dict, library: str = LIBRARY) -> tuple[bool, str]:
@@ -404,7 +422,12 @@ def run_sync(library: str = LIBRARY) -> dict:
     # stand down for the duration of the sync. The write lock keeps the
     # auto-sync worker out for the same span — same lock-then-pause order as
     # _auto_apply_one.
-    with _calibre_write_lock:
+    # Non-blocking: a second Sync click used to park its request thread behind
+    # the lock (for however long the first run took) and then re-run over an
+    # emptied queue. Now it's told the truth immediately.
+    if not _calibre_write_lock.acquire(timeout=0):
+        raise SyncBusy()
+    try:
         try:
             from . import search_index
             search_index.pause_for_calibre_write()
@@ -419,6 +442,12 @@ def run_sync(library: str = LIBRARY) -> dict:
                     search_index.resume_after_calibre_write()
                 except Exception:
                     pass
+    finally:
+        _calibre_write_lock.release()
+
+
+class SyncBusy(Exception):
+    """A Sync to Calibre is already running."""
 
 
 def _run_sync(library: str) -> dict:
@@ -427,8 +456,15 @@ def _run_sync(library: str) -> dict:
 
     items = overlay.pending()
     existing = _existing_book_ids([it["book_id"] for it in items], library)
+    valid_labels = _valid_custom_labels(library)   # once per run, not per book
+    unreachable = None
     for item in items:
         bid = item["book_id"]
+        if unreachable:
+            # The server is down: don't spend 180 s per remaining book finding
+            # that out again. Report them as not attempted.
+            failed.append({"book_id": bid, "error": unreachable})
+            continue
         if bid not in existing:
             # The book was removed from Calibre — its edit can never apply, so
             # drop it instead of failing forever. Clears orphaned edits (e.g. a
@@ -438,7 +474,7 @@ def _run_sync(library: str) -> dict:
             dropped += 1
             logger.info("Dropped pending edit for book %s (no longer in Calibre)", bid)
             continue
-        ok, out = sync_book(bid, item["fields"], library)
+        ok, out = sync_book(bid, item["fields"], library, valid_labels=valid_labels)
         if ok:
             # Value-aware, like the auto path: a field re-edited while this
             # book's calibredb call was in flight keeps its newer pending value
@@ -448,8 +484,13 @@ def _run_sync(library: str) -> dict:
         else:
             logger.warning("Calibre sync failed for book %s: %s", bid, out)
             failed.append({"book_id": bid, "error": out})
+            if _is_unreachable(out):
+                unreachable = out
 
     for up in overlay.list_uploads():
+        if unreachable:
+            failed.append({"upload_id": up["id"], "error": unreachable})
+            continue
         ok, out = add_upload_to_calibre(up, library)
         if ok:
             overlay.discard_upload(up["id"])

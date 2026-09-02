@@ -12,9 +12,8 @@ from fastapi import APIRouter, Query, Request, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 import os
-import sqlite3
+from ..search_index import FTS_DB
 
-from ..search_index import FTS_DB, _STOPWORDS, _excerpt
 
 router = APIRouter()
 
@@ -87,80 +86,48 @@ def full_text_search(
             hits = None
 
     if hits is None:
-        try:
-            fts_conn = sqlite3.connect(f"file:{FTS_DB}?mode=ro", uri=True)
-            fts_conn.row_factory = sqlite3.Row
-            # Match each word separately (any order/distance), exact phrase ranked
-            # first. (Calibre's FTS5 uses a custom tokenizer stock sqlite3 can't
-            # load, hence LIKE here rather than MATCH.)
-            raw_terms = [t for t in q.split() if t.strip()]
-            terms = [t for t in raw_terms if t.lower() not in _STOPWORDS] or raw_terms or [q]
-            term_conds = " AND ".join("searchable_text LIKE ?" for _ in terms)
-            where = f"({term_conds}) AND searchable_text IS NOT NULL"
-            wparams: list = [f"%{t}%" for t in terms]
-            if allowed_ids is not None:
-                fts_conn.execute("CREATE TEMP TABLE _allowed (book INTEGER PRIMARY KEY)")
-                fts_conn.executemany("INSERT OR IGNORE INTO _allowed (book) VALUES (?)",
-                                     [(i,) for i in allowed_ids])
-                where += " AND book IN (SELECT book FROM _allowed)"
-            rows = fts_conn.execute(
-                f"SELECT book, MIN(format) AS format, searchable_text FROM books_text WHERE {where} "
-                f"GROUP BY book ORDER BY (CASE WHEN searchable_text LIKE ? THEN 0 ELSE 1 END), book "
-                f"LIMIT ? OFFSET ?",
-                wparams + [f"%{q}%", limit, offset],
-            ).fetchall()
-            total_row = fts_conn.execute(
-                f"SELECT COUNT(DISTINCT book) FROM books_text WHERE {where}", wparams,
-            ).fetchone()
-            total = total_row[0] if total_row else 0
-            fts_conn.close()
-            hits = [{"book": r["book"], "format": r["format"],
-                     "excerpt": _excerpt(r["searchable_text"], q)} for r in rows]
-        except sqlite3.Error:
-            raise HTTPException(status_code=500, detail="Full-text search error")
+        # The index is still building (first start, or after a library change).
+        # The old fallback ran LIKE '%term%' over the ENTIRE books_text table --
+        # gigabytes of book text, tens of seconds to minutes per query, and it
+        # could be triggered 30x/minute per user. Say so instead.
+        raise HTTPException(
+            status_code=503,
+            detail="Full-text search is building its index — try again in a minute.",
+            headers={"Retry-After": "60"},
+        )
 
     if not hits:
         return SearchResponse(query=q, total=0, results=[])
 
-    # Look up book metadata from Calibre
+    # Look up book metadata from Calibre -- one query for the books (with the
+    # genre predicate in SQL as a defensive re-check) and one for their authors,
+    # instead of three queries per hit.
     results = []
-
+    ids = [h["book"] for h in hits]
+    ph = ",".join("?" * len(ids))
+    pred, pp = access.calibre_predicate(allowed, "b")
+    extra = f" AND {pred}" if pred else ""
     with get_conn() as meta_conn:
+        books = {r["id"]: r for r in meta_conn.execute(
+            f"SELECT b.id, b.title, b.has_cover FROM books b WHERE b.id IN ({ph}){extra}", [*ids, *pp])}
+        names: dict = {i: [] for i in ids}
+        for r in meta_conn.execute(
+            f"SELECT bal.book AS book, a.name FROM books_authors_link bal JOIN authors a ON a.id = bal.author "
+            f"WHERE bal.book IN ({ph}) ORDER BY bal.book, a.sort", ids):
+            names[r["book"]].append(r["name"])
         for h in hits:
-            book_id = h["book"]
-            book = meta_conn.execute(
-                "SELECT id, title, has_cover FROM books WHERE id = ?", (book_id,)
-            ).fetchone()
-
+            book = books.get(h["book"])
             if not book:
                 continue
-
-            # Hide content the member isn't allowed to see (defensive re-check on
-            # top of the query-level allow-list).
-            if not access.is_calibre_book_allowed(meta_conn, book_id, allowed):
-                continue
-
-            authors = meta_conn.execute(
-                """
-                SELECT a.name FROM authors a
-                JOIN books_authors_link bal ON bal.author = a.id
-                WHERE bal.book = ?
-                ORDER BY a.sort
-                """,
-                (book_id,),
-            ).fetchall()
-
-            author_names = [a["name"] for a in authors]
             has_cover = bool(book["has_cover"])
-
             results.append(SearchResult(
-                book_id=book_id,
+                book_id=book["id"],
                 title=book["title"],
-                authors=author_names,
+                authors=names[book["id"]],
                 format=h["format"],
                 excerpt=h["excerpt"],
                 has_cover=has_cover,
-                cover_url=f"{base_url}/api/covers/{book_id}" if has_cover else None,
+                cover_url=f"{base_url}/api/covers/{book['id']}" if has_cover else None,
             ))
 
     return SearchResponse(query=q, total=total, results=results)

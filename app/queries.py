@@ -201,3 +201,185 @@ def row_to_detail(conn: sqlite3.Connection, row: sqlite3.Row, base_url: str) -> 
         has_digital=ownership["has_digital"],
         physical_location=ownership["physical_location"],
     )
+
+
+# ── Batched builders ──────────────────────────────────────────────────────────
+# row_to_summary / row_to_detail issue 4 (summary) or 8 (detail) point queries
+# PER BOOK, plus a Postgres round trip each for detail. On a 100-book page that
+# is 400 SQLite queries; on the iOS full sync (~7,000 books) it was ~56,000
+# SQLite queries and 7,000 Postgres checkouts. These build the same models from
+# one query per related table, chunked under SQLite's parameter limit.
+#
+# Contract: identical output to the per-row builders, field for field, in the
+# same order -- the iOS app consumes these payloads verbatim. Verified by
+# diffing both builders over the whole library.
+
+_CHUNK = 500
+
+
+def _chunks(ids):
+    ids = list(ids)
+    for i in range(0, len(ids), _CHUNK):
+        yield ids[i:i + _CHUNK]
+
+
+def _related(conn: sqlite3.Connection, book_ids) -> dict:
+    """{book_id: {"authors": [...], "series": SeriesRef|None, "tags": [...],
+                  "rating": float|None}} for every id (missing keys = empty)."""
+    out = {bid: {"authors": [], "series": None, "tags": [], "rating": None} for bid in book_ids}
+    for chunk in _chunks(book_ids):
+        ph = ",".join("?" * len(chunk))
+        # Same ORDER BY as the per-book queries, per book.
+        for r in conn.execute(
+            f"SELECT bal.book AS book, a.id, a.name, a.sort FROM books_authors_link bal "
+            f"JOIN authors a ON a.id = bal.author WHERE bal.book IN ({ph}) ORDER BY bal.book, a.sort",
+            chunk,
+        ):
+            out[r["book"]]["authors"].append(Author(id=r["id"], name=r["name"], sort=r["sort"]))
+        for r in conn.execute(
+            f"SELECT bsl.book AS book, s.id, s.name, b.series_index FROM books_series_link bsl "
+            f"JOIN series s ON s.id = bsl.series JOIN books b ON b.id = bsl.book "
+            f"WHERE bsl.book IN ({ph}) ORDER BY bsl.book, bsl.id",
+            chunk,
+        ):
+            if out[r["book"]]["series"] is None:   # LIMIT 1 semantics
+                out[r["book"]]["series"] = SeriesRef(id=r["id"], name=r["name"], series_index=r["series_index"])
+        for r in conn.execute(
+            f"SELECT btl.book AS book, t.id, t.name FROM books_tags_link btl "
+            f"JOIN tags t ON t.id = btl.tag WHERE btl.book IN ({ph}) ORDER BY btl.book, t.name",
+            chunk,
+        ):
+            out[r["book"]]["tags"].append(TagRef(id=r["id"], name=r["name"]))
+        for r in conn.execute(
+            f"SELECT brl.book AS book, r.rating FROM books_ratings_link brl "
+            f"JOIN ratings r ON r.id = brl.rating WHERE brl.book IN ({ph}) ORDER BY brl.book, brl.id",
+            chunk,
+        ):
+            if out[r["book"]]["rating"] is None and r["rating"] is not None:
+                out[r["book"]]["rating"] = r["rating"] / 2.0
+    return out
+
+
+def _related_detail(conn: sqlite3.Connection, book_ids) -> dict:
+    """{book_id: {"comment", "publisher", "isbn", "formats": [...]}}."""
+    out = {bid: {"comment": None, "publisher": None, "isbn": None, "formats": []} for bid in book_ids}
+    for chunk in _chunks(book_ids):
+        ph = ",".join("?" * len(chunk))
+        for r in conn.execute(f"SELECT book, text FROM comments WHERE book IN ({ph}) ORDER BY book, id", chunk):
+            if out[r["book"]]["comment"] is None:
+                out[r["book"]]["comment"] = r["text"]
+        for r in conn.execute(
+            f"SELECT bpl.book AS book, p.name FROM books_publishers_link bpl "
+            f"JOIN publishers p ON p.id = bpl.publisher WHERE bpl.book IN ({ph}) ORDER BY bpl.book, bpl.id",
+            chunk,
+        ):
+            if out[r["book"]]["publisher"] is None:
+                out[r["book"]]["publisher"] = r["name"]
+        for r in conn.execute(
+            f"SELECT book, val FROM identifiers WHERE type = 'isbn' AND book IN ({ph}) ORDER BY book, id", chunk
+        ):
+            if out[r["book"]]["isbn"] is None:
+                out[r["book"]]["isbn"] = r["val"]
+        for r in conn.execute(
+            f"SELECT book, format, uncompressed_size FROM data WHERE book IN ({ph}) ORDER BY book, format", chunk
+        ):
+            out[r["book"]]["formats"].append(FormatRef(format=r["format"], size=r["uncompressed_size"]))
+    return out
+
+
+def fetch_ownership_map(book_ids) -> dict:
+    """{book_id: ownership dict} from Postgres in one query; {} if unavailable.
+    Raises nothing -- callers decide whether a missing map is acceptable."""
+    ids = list(book_ids)
+    if not ids:
+        return {}
+    from .pg_database import get_pg
+    pg = get_pg()
+    try:
+        cur = pg.cursor()
+        cur.execute(
+            "SELECT book_id, has_digital, has_physical, physical_location "
+            "FROM book_ownership WHERE book_id = ANY(%s) AND book_source='calibre'",
+            (ids,),
+        )
+        return {r["book_id"]: {"has_digital": r["has_digital"], "has_physical": r["has_physical"],
+                               "physical_location": r["physical_location"]} for r in cur.fetchall()}
+    finally:
+        pg.close()
+
+
+def summaries_for_rows(conn: sqlite3.Connection, rows, base_url: str, ownership_map: dict | None = None) -> list[BookSummary]:
+    """Batched equivalent of [row_to_summary(conn, r, base_url, own.get(r['id'])) for r in rows]."""
+    rows = list(rows)
+    ids = [r["id"] for r in rows]
+    rel = _related(conn, ids)
+    ownership_map = ownership_map or {}
+    default = {"has_digital": True, "has_physical": False, "physical_location": None}
+    out = []
+    for row in rows:
+        bid = row["id"]
+        has_cover = bool(row["has_cover"])
+        own = ownership_map.get(bid) or default
+        x = rel[bid]
+        out.append(BookSummary(
+            id=bid,
+            title=row["title"],
+            sort=row["sort"],
+            authors=x["authors"],
+            series=x["series"],
+            tags=x["tags"],
+            pubdate=_parse_dt(row["pubdate"]),
+            last_modified=_parse_dt(row["last_modified"]),
+            has_cover=has_cover,
+            cover_url=f"{base_url}/api/covers/{bid}" if has_cover else None,
+            rating=x["rating"],
+            book_source="calibre",
+            has_physical=own["has_physical"],
+            has_digital=own["has_digital"],
+            physical_location=own["physical_location"],
+        ))
+    return out
+
+
+def details_for_rows(conn: sqlite3.Connection, rows, base_url: str, ownership_map: dict) -> list[BookDetail]:
+    """Batched equivalent of [row_to_detail(conn, r, base_url) for r in rows].
+    `ownership_map` is REQUIRED (from fetch_ownership_map): the per-row builder
+    silently substituted defaults when Postgres failed; callers of this one
+    decide that explicitly."""
+    rows = list(rows)
+    ids = [r["id"] for r in rows]
+    rel = _related(conn, ids)
+    det = _related_detail(conn, ids)
+    default = {"has_digital": True, "has_physical": False, "physical_location": None}
+    out = []
+    for row in rows:
+        bid = row["id"]
+        has_cover = bool(row["has_cover"])
+        own = ownership_map.get(bid) or default
+        x, d = rel[bid], det[bid]
+        out.append(BookDetail(
+            id=bid,
+            title=row["title"],
+            sort=row["sort"],
+            authors=x["authors"],
+            series=x["series"],
+            tags=x["tags"],
+            pubdate=_parse_dt(row["pubdate"]),
+            last_modified=_parse_dt(row["last_modified"]),
+            has_cover=has_cover,
+            cover_url=f"{base_url}/api/covers/{bid}" if has_cover else None,
+            rating=x["rating"],
+            comment=d["comment"],
+            publisher=d["publisher"],
+            isbn=d["isbn"],
+            uuid=row["uuid"],
+            formats=d["formats"],
+            path=row["path"],
+            series_index=row["series_index"],
+            date_added=(_parse_dt(row["timestamp"]) if "timestamp" in row.keys() else None),
+            book_source="calibre",
+            has_physical=own["has_physical"],
+            has_digital=own["has_digital"],
+            physical_location=own["physical_location"],
+        ))
+    return out

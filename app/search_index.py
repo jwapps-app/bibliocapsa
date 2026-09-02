@@ -348,19 +348,45 @@ def search(q: str, allowed_ids, limit: int, offset: int):
     finally:
         conn.close()
 
-    # Excerpts come from Calibre's stored text (we don't keep a copy).
+    # Excerpts come from Calibre's stored text (we don't keep a copy). Cut the
+    # window out INSIDE SQLite: pulling each hit's full text (often megabytes)
+    # into Python and lower()-casing it made a 20-hit page churn ~50-100 MB.
     results = []
     if page:
         cal = sqlite3.connect(f"file:{FTS_DB}?mode=ro", uri=True, timeout=10)
         cal.row_factory = sqlite3.Row
         try:
             for book, fmt in page:
-                row = cal.execute(
-                    "SELECT searchable_text FROM books_text WHERE book = ? AND format = ? LIMIT 1",
-                    (book, fmt),
-                ).fetchone()
-                ex = _excerpt(row["searchable_text"], q) if row and row["searchable_text"] else ""
-                results.append({"book": book, "format": fmt, "excerpt": ex})
+                results.append({"book": book, "format": fmt, "excerpt": _sql_excerpt(cal, book, fmt, q)})
         finally:
             cal.close()
     return total, results
+
+
+def _sql_excerpt(cal, book: int, fmt: str, q: str, context: int = 200) -> str:
+    """Excerpt around the first occurrence of the query (or its first word),
+    computed with substr/instr so only ~context bytes cross into Python."""
+    needles = [c.strip() for c in [q, *q.split()] if c.strip()]
+    for needle in needles:
+        row = cal.execute(
+            "SELECT instr(lower(searchable_text), lower(?)) AS pos, length(searchable_text) AS n "
+            "FROM books_text WHERE book = ? AND format = ? LIMIT 1",
+            (needle, book, fmt),
+        ).fetchone()
+        if row is None:
+            return ""
+        pos, n = row["pos"] or 0, row["n"] or 0
+        if pos:
+            start = max(1, pos - context // 2)
+            end = min(n, pos + len(needle) + context // 2)
+            piece = cal.execute(
+                "SELECT substr(searchable_text, ?, ?) AS s FROM books_text WHERE book = ? AND format = ? LIMIT 1",
+                (start, end - start + 1, book, fmt),
+            ).fetchone()
+            text = (piece["s"] or "").strip()
+            return ("…" if start > 1 else "") + text + ("…" if end < n else "")
+    head = cal.execute(
+        "SELECT substr(searchable_text, 1, ?) AS s FROM books_text WHERE book = ? AND format = ? LIMIT 1",
+        (context, book, fmt),
+    ).fetchone()
+    return ((head["s"] or "").strip() + "…") if head and head["s"] else ""

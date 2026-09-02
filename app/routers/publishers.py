@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, Query, Request
 from ..database import get_conn
-from .. import access
+from .. import access, ttlcache
 
 router = APIRouter()
 
@@ -10,6 +10,11 @@ router = APIRouter()
 @router.get("", summary="List publisher names (for autocomplete)")
 def list_publishers(request: Request, page_size: int = Query(5000, ge=1, le=10000)):
     allowed = access.restriction_for_request(request)
+    key = ("publishers", ttlcache.calibre_marker(), ttlcache.allowed_key(allowed), page_size)
+    return ttlcache.get_or_set(key, 60, lambda: _list_publishers(allowed, page_size))
+
+
+def _list_publishers(allowed, page_size):
     with get_conn() as conn:
         if allowed is None:
             rows = conn.execute(

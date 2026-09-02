@@ -133,7 +133,25 @@ def _open(username: str):
 
 def summary(username: str, since: int = None):
     """Reading summary. `since` (epoch) limits totals + per-book ranking to a
-    recent window (computed from page_stat_data); None = all time (book totals)."""
+    recent window (computed from page_stat_data); None = all time (book totals).
+
+    Cached per (file identity, window, thresholds): the statistics file only
+    changes on a WebDAV PUT, yet every dashboard load re-scanned ~100k page
+    events (and, with the noise filters on, sessionised them in Python)."""
+    p = stats_path(username)
+    if not p:
+        return None
+    try:
+        st = os.stat(p)
+        ident = (p, st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+    from . import ttlcache
+    key = ("koreader-summary", username, ident, since, _thresholds())
+    return ttlcache.get_or_set(key, 300, lambda: _summary_uncached(username, since))
+
+
+def _summary_uncached(username: str, since: int = None):
     conn = _open(username)
     if not conn:
         return None

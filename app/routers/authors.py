@@ -4,7 +4,8 @@ from fastapi import APIRouter, Query, HTTPException, Request
 from typing import Optional
 from ..database import get_conn
 from ..schemas import Author, AuthorDetail
-from ..queries import row_to_summary
+from ..queries import summaries_for_rows
+from .. import ttlcache
 from .. import access
 
 router = APIRouter()
@@ -19,6 +20,12 @@ def list_authors(
 ):
     allowed = access.restriction_for_request(request)
     offset = (page - 1) * page_size
+    # Pure function of the Calibre database + these parameters: cache it.
+    key = ("authors", ttlcache.calibre_marker(), ttlcache.allowed_key(allowed), search, page, page_size)
+    return ttlcache.get_or_set(key, 60, lambda: _list_authors(allowed, search, page_size, offset))
+
+
+def _list_authors(allowed, search, page_size, offset):
     with get_conn() as conn:
         search_clause = "a.name LIKE ?" if search else "1=1"
         search_params = [f"%{search}%"] if search else []
@@ -78,26 +85,28 @@ def get_author(author_id: int, request: Request):
         if not row:
             raise HTTPException(status_code=404, detail=f"Author {author_id} not found")
 
+        # Genre restriction in the SQL (one predicate) rather than a query per
+        # book afterwards, and the summaries built in a handful of batched
+        # queries rather than four per book -- a prolific author page used to
+        # cost several hundred SQLite queries.
+        allowed = access.restriction_for_request(request)
+        pred, pp = access.calibre_predicate(allowed, "b")
+        extra = f" AND {pred}" if pred else ""
         book_rows = conn.execute(
-            """
+            f"""
             SELECT b.id, b.title, b.sort, b.pubdate, b.last_modified,
                    b.has_cover, b.uuid, b.path, b.series_index, b.author_sort
             FROM books b
             JOIN books_authors_link bal ON bal.book = b.id
-            WHERE bal.author = ?
+            WHERE bal.author = ?{extra}
             ORDER BY b.sort ASC
             """,
-            (author_id,),
+            [author_id, *pp],
         ).fetchall()
+        if allowed is not None and not book_rows:
+            raise HTTPException(status_code=404, detail=f"Author {author_id} not found")
 
-        allowed = access.restriction_for_request(request)
-        if allowed is not None:
-            book_rows = [br for br in book_rows
-                         if access.is_calibre_book_allowed(conn, br["id"], allowed)]
-            if not book_rows:
-                raise HTTPException(status_code=404, detail=f"Author {author_id} not found")
-
-        books = [row_to_summary(conn, br, base_url) for br in book_rows]
+        books = summaries_for_rows(conn, book_rows, base_url)
 
         return AuthorDetail(
             id=row["id"],

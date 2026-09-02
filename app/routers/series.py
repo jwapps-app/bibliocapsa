@@ -5,7 +5,8 @@ from typing import Optional
 from pydantic import BaseModel
 from ..database import get_conn
 from ..schemas import SeriesDetail
-from ..queries import row_to_summary
+from ..queries import summaries_for_rows
+from .. import ttlcache
 from .. import access
 
 router = APIRouter()
@@ -43,6 +44,11 @@ def list_series(
     base_url = str(request.base_url).rstrip("/")
     allowed = access.restriction_for_request(request)
     offset = (page - 1) * page_size
+    key = ("series", ttlcache.calibre_marker(), ttlcache.allowed_key(allowed), search, page, page_size, base_url)
+    return ttlcache.get_or_set(key, 60, lambda: _list_series(allowed, search, page_size, offset, base_url))
+
+
+def _list_series(allowed, search, page_size, offset, base_url):
     with get_conn() as conn:
         search_clause = "s.name LIKE ?" if search else "1=1"
         search_params = [f"%{search}%"] if search else []
@@ -128,26 +134,24 @@ def get_series(series_id: int, request: Request):
         if not row:
             raise HTTPException(status_code=404, detail=f"Series {series_id} not found")
 
+        allowed = access.restriction_for_request(request)
+        pred, pp = access.calibre_predicate(allowed, "b")
+        extra = f" AND {pred}" if pred else ""
         book_rows = conn.execute(
-            """
+            f"""
             SELECT b.id, b.title, b.sort, b.pubdate, b.last_modified,
                    b.has_cover, b.uuid, b.path, b.series_index, b.author_sort
             FROM books b
             JOIN books_series_link bsl ON bsl.book = b.id
-            WHERE bsl.series = ?
+            WHERE bsl.series = ?{extra}
             ORDER BY b.series_index ASC, b.sort ASC
             """,
-            (series_id,),
+            [series_id, *pp],
         ).fetchall()
+        if allowed is not None and not book_rows:
+            raise HTTPException(status_code=404, detail=f"Series {series_id} not found")
 
-        allowed = access.restriction_for_request(request)
-        if allowed is not None:
-            book_rows = [br for br in book_rows
-                         if access.is_calibre_book_allowed(conn, br["id"], allowed)]
-            if not book_rows:
-                raise HTTPException(status_code=404, detail=f"Series {series_id} not found")
-
-        books = [row_to_summary(conn, br, base_url) for br in book_rows]
+        books = summaries_for_rows(conn, book_rows, base_url)
 
         return SeriesDetail(
             id=row["id"],

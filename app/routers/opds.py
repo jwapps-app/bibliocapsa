@@ -30,11 +30,38 @@ def _esc(s) -> str:
     return (str(s) if s is not None else "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _book_entries(conn, base: str, rows, now: str) -> str:
+    """Entries for many books with ONE authors query and ONE formats query,
+    instead of two per book (a 50-book feed page was 100 queries; the whole
+    library as a shelf feed, thousands). Same markup as _book_entry."""
+    rows = list(rows)
+    ids = [r["id"] for r in rows]
+    authors: dict = {i: [] for i in ids}
+    formats: dict = {i: [] for i in ids}
+    for i in range(0, len(ids), 500):
+        chunk = ids[i:i + 500]
+        ph = ",".join("?" * len(chunk))
+        for r in conn.execute(
+            f"SELECT bal.book AS book, a.name FROM books_authors_link bal JOIN authors a ON a.id = bal.author "
+            f"WHERE bal.book IN ({ph}) ORDER BY bal.book, a.sort", chunk):
+            authors[r["book"]].append(r["name"])
+        for r in conn.execute(
+            f"SELECT book, format FROM data WHERE book IN ({ph}) ORDER BY book, format", chunk):
+            formats[r["book"]].append(r["format"])
+    return "".join(_entry_markup(base, r, now, authors[r["id"]], formats[r["id"]]) for r in rows)
+
+
 def _book_entry(conn, base: str, row, now: str) -> str:
     """An acquisition <entry> with author, cover, and per-format download links."""
     book_id = row["id"]
-    authors = fetch_authors_for_book(conn, book_id)
-    author_tags = "".join(f"    <author><name>{_esc(a.name)}</name></author>\n" for a in authors)
+    names = [a.name for a in fetch_authors_for_book(conn, book_id)]
+    fmts = [f["format"] for f in conn.execute("SELECT format FROM data WHERE book = ? ORDER BY format", (book_id,)).fetchall()]
+    return _entry_markup(base, row, now, names, fmts)
+
+
+def _entry_markup(base: str, row, now: str, author_names, fmts) -> str:
+    book_id = row["id"]
+    author_tags = "".join(f"    <author><name>{_esc(n)}</name></author>\n" for n in author_names)
 
     cover = ""
     if row["has_cover"]:
@@ -42,8 +69,8 @@ def _book_entry(conn, base: str, row, now: str) -> str:
                  f'    <link rel="http://opds-spec.org/image/thumbnail" href="{base}/api/covers/{book_id}" type="image/jpeg"/>\n')
 
     acquisitions = ""
-    for f in conn.execute("SELECT format FROM data WHERE book = ? ORDER BY format", (book_id,)).fetchall():
-        fmt = (f["format"] or "").upper()
+    for f in fmts:
+        fmt = (f or "").upper()
         mime = MIME_TYPES.get(fmt, "application/octet-stream")
         acquisitions += (f'    <link rel="http://opds-spec.org/acquisition" '
                          f'href="{base}/api/books/{book_id}/file/{fmt.lower()}" type="{mime}"/>\n')
@@ -152,7 +179,7 @@ def opds_books(request: Request, page: int = Query(1, ge=1), page_size: int = Qu
         ).fetchall()
         has_more = len(rows) > page_size
         rows = rows[:page_size]
-        entries = "".join(_book_entry(conn, base, r, now) for r in rows)
+        entries = _book_entries(conn, base, rows, now)
 
     next_href = f"{base}/opds/books?page={page + 1}" if has_more else None
     return _acquisition_feed(f"urn:bibliocapsa:books:{page}", "All Books",
@@ -222,7 +249,7 @@ def opds_series_books(series_id: int, request: Request):
                 ORDER BY b.series_index ASC, b.sort ASC""",
             [series_id] + pp,
         ).fetchall()
-        entries = "".join(_book_entry(conn, base, r, now) for r in rows)
+        entries = _book_entries(conn, base, rows, now)
 
     return _acquisition_feed(f"urn:bibliocapsa:series:{series_id}:books", title,
                              f"{base}/opds/series/{series_id}", entries, base, now)
@@ -291,10 +318,34 @@ def opds_author_books(author_id: int, request: Request):
                 ORDER BY b.sort ASC""",
             [author_id] + pp,
         ).fetchall()
-        entries = "".join(_book_entry(conn, base, r, now) for r in rows)
+        entries = _book_entries(conn, base, rows, now)
 
     return _acquisition_feed(f"urn:bibliocapsa:author:{author_id}:books", title,
                              f"{base}/opds/authors/{author_id}", entries, base, now)
+
+
+def _entries_for_ids(cal, base: str, cal_ids, allowed, now: str) -> str:
+    """Entries for an ordered id list (shelf / wishlist order), keeping that
+    order, deduped, genre-filtered in SQL, built in batches. Replaces a
+    per-id allow-check + SELECT + two sub-queries (4 queries per book)."""
+    order, seen = [], set()
+    for bid in cal_ids:
+        if bid not in seen:
+            seen.add(bid); order.append(bid)
+    if not order:
+        return ""
+    pred, pp = access.calibre_predicate(allowed, "b")
+    extra = f" AND {pred}" if pred else ""
+    by_id = {}
+    for i in range(0, len(order), 500):
+        chunk = order[i:i + 500]
+        ph = ",".join("?" * len(chunk))
+        for r in cal.execute(
+            f"SELECT b.id, b.title, b.last_modified, b.has_cover, b.uuid FROM books b "
+            f"WHERE b.id IN ({ph}){extra}", [*chunk, *pp]):
+            by_id[r["id"]] = r
+    rows = [by_id[i] for i in order if i in by_id]
+    return _book_entries(cal, base, rows, now)
 
 
 # ── Shelves ───────────────────────────────────────────────────────────────────
@@ -360,17 +411,8 @@ def opds_wishlist(request: Request):
             conn.close()
 
     # Only owned Calibre books are downloadable; render those (access-filtered).
-    seen, entries = set(), ""
     with get_conn() as cal:
-        for bid in cal_ids:
-            if bid in seen or not access.is_calibre_book_allowed(cal, bid, allowed):
-                continue
-            seen.add(bid)
-            row = cal.execute(
-                "SELECT id, title, last_modified, has_cover, uuid FROM books WHERE id = ?", (bid,)
-            ).fetchone()
-            if row:
-                entries += _book_entry(cal, base, row, now)
+        entries = _entries_for_ids(cal, base, cal_ids, allowed, now)
 
     return _acquisition_feed("urn:bibliocapsa:wishlist:books", "Want to Read",
                              f"{base}/opds/wishlist", entries, base, now)
@@ -412,17 +454,8 @@ def opds_shelf_books(shelf_id: int, request: Request):
         conn.close()
 
     # Only Calibre books have downloadable files; render those (access-filtered).
-    seen, entries = set(), ""
     with get_conn() as cal:
-        for bid in cal_ids:
-            if bid in seen or not access.is_calibre_book_allowed(cal, bid, allowed):
-                continue
-            seen.add(bid)
-            row = cal.execute(
-                "SELECT id, title, last_modified, has_cover, uuid FROM books WHERE id = ?", (bid,)
-            ).fetchone()
-            if row:
-                entries += _book_entry(cal, base, row, now)
+        entries = _entries_for_ids(cal, base, cal_ids, allowed, now)
 
     return _acquisition_feed(f"urn:bibliocapsa:shelf:{shelf_id}:books", title,
                              f"{base}/opds/shelves/{shelf_id}", entries, base, now)

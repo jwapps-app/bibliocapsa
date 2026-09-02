@@ -4,7 +4,7 @@ from fastapi import APIRouter, Query, HTTPException, Request
 from typing import Optional
 from ..database import get_conn
 from ..schemas import BookDetail, BookSummary, PaginatedBooks
-from ..queries import row_to_summary, row_to_detail
+from ..queries import row_to_summary, row_to_detail, summaries_for_rows
 from .. import access
 from .. import calibre_overlay as overlay
 from .. import calibre_custom
@@ -87,6 +87,10 @@ def _read_filter_clause(read_filter, conn):
     def _in(ids):
         return "(" + ",".join(str(int(i)) for i in ids) + ")"
 
+    # No filter requested: nothing to do. This used to fall through and load
+    # every read/reading row from Postgres on EVERY list request, then discard it.
+    if read_filter not in ("read", "reading", "unread"):
+        return None
     sets = calibre_read.ids_by_status()
     read_ids = sets["read"]
     reading_ids = sets["reading"]
@@ -390,8 +394,8 @@ def _merged_all(request, base_url, page, page_size, offset, search, sort_dir, al
                 pg2.close()
             except Exception:
                 pass
-            for row in rows:
-                cal_map[row["id"]] = row_to_summary(conn, row, base_url, ownership_map.get(row["id"]))
+            for summary in summaries_for_rows(conn, rows, base_url, ownership_map):
+                cal_map[summary.id] = summary
 
     # ── Build native summaries for the slice ──
     nat_map: dict = {}
@@ -576,7 +580,7 @@ def list_books(
             except Exception:
                 pass
 
-        items = [row_to_summary(conn, row, base_url, ownership_map.get(row["id"])) for row in rows]
+        items = summaries_for_rows(conn, rows, base_url, ownership_map)
 
     return PaginatedBooks(
         total=total,

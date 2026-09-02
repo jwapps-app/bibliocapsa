@@ -404,5 +404,9 @@ def sync_to_calibre(body: SyncRequest, request: Request):
         u = auth.authenticate_request(request) or {}
         _queue_reading_updates(u.get("username"), u.get("id"))
     except Exception:
-        pass
-    return calibre_sync.run_sync()
+        import logging
+        logging.getLogger(__name__).warning("reading updates could not be queued before sync", exc_info=True)
+    try:
+        return calibre_sync.run_sync()
+    except calibre_sync.SyncBusy:
+        raise HTTPException(status_code=409, detail="A sync to Calibre is already running — wait for it to finish.")
