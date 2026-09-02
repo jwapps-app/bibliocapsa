@@ -35,23 +35,41 @@ _settings_cache: dict = {}
 _SETTINGS_TTL = 30.0
 
 
+_settings_err_logged: dict = {}
+
+
 def get_setting(key: str) -> Optional[str]:
-    """Read a raw setting value. Returns None if unset or DB unavailable."""
+    """Read a raw setting value. Returns None if unset.
+
+    If Postgres is unavailable, the last known value is served (stale) and the
+    failure is logged once per key per minute. It used to return None with no
+    log at all -- during a database blip auto-sync silently switched off,
+    the reading columns were silently ignored and email reported itself as
+    "not configured", with nothing in the log to say why."""
     import time
     hit = _settings_cache.get(key)
     if hit is not None and (time.monotonic() - hit[1]) < _SETTINGS_TTL:
         return hit[0]
     try:
         conn = _pg()
-        cur = conn.cursor()
-        cur.execute("SELECT value FROM app_settings WHERE key = %s", (key,))
-        row = cur.fetchone()
-        conn.close()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT value FROM app_settings WHERE key = %s", (key,))
+            row = cur.fetchone()
+        finally:
+            conn.close()
         val = row["value"] if row else None
         _settings_cache[key] = (val, time.monotonic())
         return val
-    except Exception:
-        return None
+    except Exception as e:
+        import logging
+        now = time.monotonic()
+        if now - _settings_err_logged.get(key, 0) > 60:
+            _settings_err_logged[key] = now
+            logging.getLogger(__name__).warning(
+                "setting %r unavailable (%s)%s", key, e,
+                " -- serving the last known value" if hit is not None else "")
+        return hit[0] if hit is not None else None
 
 
 def set_setting(key: str, value: Optional[str]) -> None:

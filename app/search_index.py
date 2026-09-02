@@ -130,6 +130,7 @@ def _fingerprint(cal) -> list:
 
 
 def status() -> dict:
+    conn = None
     try:
         conn = _connect(readonly=True)
         rows = {r["k"]: json.loads(r["v"]) for r in conn.execute("SELECT k, v FROM index_state")}
@@ -137,10 +138,15 @@ def status() -> dict:
             n = conn.execute("SELECT COUNT(*) AS c FROM doc_meta").fetchone()["c"]
         except Exception:
             n = 0
-        conn.close()
         return {"available": True, "indexed": n, **rows}
     except Exception:
         return {"available": False, "indexed": 0, "state": "absent"}
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def is_ready() -> bool:
@@ -160,6 +166,7 @@ def sync(reason: str = "startup") -> None:
         logger.info("search index: a build is already running, skipping (%s)", reason)
         return
     started = time.time()
+    cal = idx = None
     try:
         cal = sqlite3.connect(f"file:{FTS_DB}?mode=ro", uri=True, timeout=10)
         cal.row_factory = sqlite3.Row
@@ -221,6 +228,14 @@ def sync(reason: str = "startup") -> None:
         logger.info("search index rebuilt (%s): %d docs in %.1fs", reason, n, time.time() - started)
     except Exception:
         logger.exception("search index build failed (%s)", reason)
+        # Release both handles first (a failed periodic run every 30 min used
+        # to leak them), then record the state on a fresh connection.
+        for h in (cal, idx):
+            try:
+                if h is not None:
+                    h.close()
+            except Exception:
+                pass
         try:
             bad = _connect(); _set_state(bad, state="error"); bad.close()
         except Exception:

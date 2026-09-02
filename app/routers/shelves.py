@@ -67,6 +67,21 @@ def _ensure_tables():
     global _tables_ensured
     if _tables_ensured:
         return
+    # Serialised: two concurrent first requests both saw COUNT(*)=0 and both
+    # seeded the three default smart shelves (duplicates in the sidebar). The
+    # seed is also written as INSERT ... WHERE NOT EXISTS, so even a second
+    # process can't double it.
+    with _ensure_lock:
+        if _tables_ensured:
+            return
+        _ensure_tables_locked()
+
+
+_ensure_lock = __import__("threading").Lock()
+
+
+def _ensure_tables_locked():
+    global _tables_ensured
     try:
         conn = _pg()
         cur = conn.cursor()
@@ -91,8 +106,10 @@ def _ensure_tables():
             ]
             for name, desc, is_smart, rules in defaults:
                 cur.execute(
-                    "INSERT INTO shelves (name, description, is_smart, smart_rules, is_shared) VALUES (%s,%s,%s,%s::jsonb,TRUE)",
-                    (name, desc, is_smart, rules)
+                    "INSERT INTO shelves (name, description, is_smart, smart_rules, is_shared) "
+                    "SELECT %s,%s,%s,%s::jsonb,TRUE "
+                    "WHERE NOT EXISTS (SELECT 1 FROM shelves WHERE is_smart = TRUE AND name = %s)",
+                    (name, desc, is_smart, rules, name)
                 )
         # Self-heal: convert the old default "Recently Added / 30 days" shelf to
         # the newer "Most Recent / 50" so existing installs update automatically

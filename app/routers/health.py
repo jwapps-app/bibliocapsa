@@ -1,6 +1,7 @@
 """Health check endpoint."""
 
 from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 from ..database import get_conn
 from ..schemas import HealthResponse
 
@@ -75,6 +76,16 @@ def health(request: Request):
         # (these numbers drive the header and the sidebar's "Library" figure).
         user = auth.authenticate_request(request)
         allowed = access.get_restriction(user)
+        # Both stores must answer. This used to return HTTP 200 with
+        # status="error" when Calibre was unreadable and never looked at
+        # Postgres at all, so the Docker healthcheck and any monitor saw a
+        # healthy container that could not serve a single library request.
+        from ..pg_database import get_pg
+        pg = get_pg()
+        try:
+            pg.cursor().execute("SELECT 1")
+        finally:
+            pg.close()
         with get_conn() as conn:
             if user is None:
                 conn.execute("SELECT 1").fetchone()
@@ -90,8 +101,11 @@ def health(request: Request):
             calibre_count=calibre_count,
             native_count=native_count,
         )
-    except Exception:
-        return HealthResponse(status="error", calibre_db="error", book_count=0)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("health check failed: %s", e)
+        return JSONResponse(status_code=503,
+                            content=HealthResponse(status="error", calibre_db="error", book_count=0).model_dump())
 
 
 def _library_counts(allowed) -> tuple:

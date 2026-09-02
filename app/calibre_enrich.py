@@ -32,7 +32,8 @@ def _scanned_ids() -> set:
     conn = _pg()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT book_id FROM calibre_enrich_log")
+        # 'error' rows are provider outages / rate limits, not answers -- retry them.
+        cur.execute("SELECT book_id FROM calibre_enrich_log WHERE status <> 'error'")
         return {r["book_id"] for r in cur.fetchall()}
     finally:
         conn.close()
@@ -95,6 +96,23 @@ def _best_match(title: str, author: Optional[str], cands: list[dict]) -> Optiona
 
 
 def _run(token: Optional[str], force: bool = False):
+    # Everything in try/finally: if the worker dies (Calibre locked while a
+    # sync writes, Postgres away for a moment) the `running` flag used to stay
+    # set forever and every later start returned 409 until a restart.
+    try:
+        _run_inner(token, force)
+    except Exception as e:
+        logger.exception("Calibre enrichment aborted")
+        with _lock:
+            _job["error"] = str(e)
+    finally:
+        with _lock:
+            _job["running"] = False
+            _job["current"] = None
+            _job["finished_at"] = datetime.now(timezone.utc).isoformat()
+
+
+def _run_inner(token: Optional[str], force: bool = False):
     from .database import get_conn
     from . import metadata, calibre_overlay as overlay
 
@@ -159,6 +177,12 @@ def _run(token: Optional[str], force: bool = False):
                 _record(b["id"], "filled")
                 with _lock:
                     _job["filled"] += 1
+            elif metadata.transient_failure():
+                # The provider didn't answer -- that's not "no match". Leave it
+                # retryable rather than stamping the book as tried-and-empty.
+                _record(b["id"], "error")
+                with _lock:
+                    _job["errors"] = _job.get("errors", 0) + 1
             else:
                 _record(b["id"], "no_match")
                 with _lock:
@@ -166,16 +190,11 @@ def _run(token: Optional[str], force: bool = False):
         except Exception as e:
             logger.warning("Calibre enrich failed for book %s: %s", b["id"], e)
             with _lock:
-                _job["no_match"] += 1
+                _job["errors"] = _job.get("errors", 0) + 1
 
         with _lock:
             _job["processed"] += 1
         time.sleep(delay)
-
-    with _lock:
-        _job["running"] = False
-        _job["current"] = None
-        _job["finished_at"] = datetime.now(timezone.utc).isoformat()
 
 
 def start(token: Optional[str], force: bool = False) -> bool:
@@ -183,7 +202,7 @@ def start(token: Optional[str], force: bool = False) -> bool:
         if _job["running"]:
             return False
         _job.update(running=True, cancel=False, total=0, processed=0, filled=0,
-                    no_match=0, skipped=0, current=None,
+                    no_match=0, errors=0, error=None, skipped=0, current=None,
                     started_at=datetime.now(timezone.utc).isoformat(), finished_at=None)
     threading.Thread(target=_run, args=(token, force), daemon=True).start()
     return True

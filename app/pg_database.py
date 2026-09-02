@@ -121,6 +121,7 @@ def get_pg():
 
 def init_postgres():
     """Create tables if they don't exist."""
+    conn = None
     try:
         import psycopg2
 
@@ -482,14 +483,23 @@ def init_postgres():
                 cur.execute("UPDATE users SET kosync_key = %s WHERE id = %s", (kosync_wrap(md5_hex), uid))
             logger.info("Wrapped %d legacy KOReader key(s) with server HMAC", len(legacy_keys))
 
+        # Commit the schema and migrations NOW. The two best-effort statements
+        # below used to run inside this same transaction: if ALTER DATABASE
+        # failed (the app user isn't the database owner on a managed Postgres)
+        # Postgres aborted the transaction, the final commit became a silent
+        # rollback of EVERY migration, and the log still said "initialized".
+        conn.commit()
+        logger.info("PostgreSQL tables initialized")
+
         # Hardening: bound every query so a runaway/expensive request can't pin the
         # DB indefinitely. Applies to new sessions (the app's), not this init one.
+        conn.autocommit = True
         try:
             import os as _os
             dbname = _os.getenv("POSTGRES_DB", "bibliocapsa").replace('"', '')
             cur.execute(f"ALTER DATABASE \"{dbname}\" SET statement_timeout = '30s'")
         except Exception as _e:
-            logger.warning("Could not set statement_timeout: %s", _e)
+            logger.warning("Could not set statement_timeout (needs database ownership): %s", _e)
 
         # Housekeeping: expired sessions were only removed on explicit logout, so
         # the table grew without bound. Purge at every startup.
@@ -499,13 +509,13 @@ def init_postgres():
                 logger.info("Purged %d expired session(s)", cur.rowcount)
         except Exception as _e:
             logger.warning("Session purge skipped: %s", _e)
-
-        conn.commit()
-        cur.close()
-        conn.close()
-        logger.info("PostgreSQL tables initialized")
-
     except Exception as e:
-        logger.warning(f"PostgreSQL not available: {e}. Native library features disabled.")
+        logger.error(f"PostgreSQL initialization FAILED: {e}. Native library features disabled.")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 

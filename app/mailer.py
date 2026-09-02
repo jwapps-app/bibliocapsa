@@ -22,11 +22,21 @@ SMTP_FROM = "smtp_from"
 SMTP_TLS = "smtp_tls"  # "true"/"false"; STARTTLS when true, SMTP_SSL when port 465
 
 
+def _port(raw) -> int:
+    """The stored port is free text; a stray non-number used to raise inside
+    is_configured() and turn Send-to-Kindle into a 500."""
+    try:
+        p = int(str(raw or "").strip() or 587)
+        return p if 1 <= p <= 65535 else 587
+    except (TypeError, ValueError):
+        return 587
+
+
 def get_config() -> dict:
     from .routers.settings import get_setting
     return {
         "host": get_setting(SMTP_HOST),
-        "port": int(get_setting(SMTP_PORT) or 587),
+        "port": _port(get_setting(SMTP_PORT)),
         "user": get_setting(SMTP_USER),
         "password": get_setting(SMTP_PASSWORD),
         "from": get_setting(SMTP_FROM) or get_setting(SMTP_USER),

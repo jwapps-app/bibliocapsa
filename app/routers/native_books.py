@@ -316,11 +316,15 @@ def _enrich_one(cur, book: dict, token: Optional[str]) -> str:
             cover_url = md.cover_url
 
     if not md or not (cover_url or md.description):
+        # A provider outage or rate limit is not "no match". Record it as
+        # 'error' so the next bulk run retries it; 'no_match' rows are skipped
+        # forever and used to swallow an entire batch when Hardcover was down.
+        status = "error" if metadata.transient_failure() else "no_match"
         cur.execute(
-            "UPDATE native_books SET enrich_status='no_match', enriched_at=NOW() WHERE id=%s",
-            (book["id"],),
+            "UPDATE native_books SET enrich_status=%s, enriched_at=NOW() WHERE id=%s",
+            (status, book["id"]),
         )
-        return "no_match"
+        return status
 
     # Only fill fields that are currently empty (never overwrite user-entered data).
     cur.execute(
@@ -452,23 +456,47 @@ def start_enrich_job(force: bool = False) -> bool:
     return True
 
 
+# One worker, one queue: adding a book used to spawn an unbounded thread each,
+# so a barcode-scanning session of 300 books meant 300 concurrent threads
+# hitting Hardcover at once (429s, every book stamped no_match) and 300
+# Postgres connections held at the same time.
+import queue as _queue
+_enrich_q: "_queue.Queue[int]" = _queue.Queue()
+_enrich_worker: Optional[threading.Thread] = None
+_enrich_worker_lock = threading.Lock()
+
+
 def _enrich_book_async(book_id: int) -> None:
-    """Enrich a single new book in the background (used on manual add)."""
-    def _job():
-        from ..routers.settings import get_setting, HARDCOVER_TOKEN_KEY
-        token = get_setting(HARDCOVER_TOKEN_KEY)
+    """Queue a single new book for background enrichment (used on manual add)."""
+    global _enrich_worker
+    _enrich_q.put(int(book_id))
+    with _enrich_worker_lock:
+        if _enrich_worker is None or not _enrich_worker.is_alive():
+            _enrich_worker = threading.Thread(target=_enrich_loop, name="native-enrich", daemon=True)
+            _enrich_worker.start()
+
+
+def _enrich_loop() -> None:
+    from ..routers.settings import get_setting, HARDCOVER_TOKEN_KEY
+    while True:
+        book_id = _enrich_q.get()
         try:
+            token = get_setting(HARDCOVER_TOKEN_KEY)
             conn = _pg()
-            cur = conn.cursor()
-            cur.execute("SELECT id, title, isbn, isbn13 FROM native_books WHERE id=%s", (book_id,))
-            b = cur.fetchone()
-            if b:
-                _enrich_one(cur, dict(b), token)
-                conn.commit()
-            conn.close()
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT id, title, isbn, isbn13 FROM native_books WHERE id=%s", (book_id,))
+                b = cur.fetchone()
+                if b:
+                    _enrich_one(cur, dict(b), token)
+                    conn.commit()
+            finally:
+                conn.close()
         except Exception as e:
             logger.warning("Auto-enrich for book %s failed: %s", book_id, e)
-    threading.Thread(target=_job, daemon=True).start()
+        finally:
+            _enrich_q.task_done()
+        time.sleep(1.0 if token else 0.34)   # same pacing as the bulk job
 
 
 @router.post("/enrich", summary="Start bulk metadata enrichment (background)")

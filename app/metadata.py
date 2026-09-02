@@ -95,6 +95,29 @@ query BookByIsbn($isbn: String!) {
 """
 
 
+# "No data" vs "couldn't ask". A provider being down, rate-limiting us (429) or
+# erroring (5xx) is NOT the same as it having no record of a book -- but both
+# used to come back as None, and callers then stamped the book `no_match` and
+# never asked again. The flag is per thread (enrichment workers run in their
+# own threads) and reset at the start of each public lookup.
+import threading as _threading
+_tl = _threading.local()
+
+
+def _reset_transient() -> None:
+    _tl.transient = False
+
+
+def _mark_transient() -> None:
+    _tl.transient = True
+
+
+def transient_failure() -> bool:
+    """True if the most recent lookup on this thread hit a provider outage or
+    rate limit (as opposed to a clean 'not found'). Retry later."""
+    return bool(getattr(_tl, "transient", False))
+
+
 def _http_post_json(url: str, payload: dict, headers: dict) -> Optional[dict]:
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
@@ -108,9 +131,13 @@ def _http_post_json(url: str, payload: dict, headers: dict) -> Optional[dict]:
         except Exception:
             pass
         logger.warning("Hardcover HTTP %s: %s", e.code, body)
+        if e.code in (401, 403, 404):
+            return None      # our token / the query, not the service
+        _mark_transient()
         return None
     except Exception as e:
         logger.warning("Hardcover request failed: %s", e)
+        _mark_transient()
         return None
 
 
@@ -120,11 +147,14 @@ def _http_get_json(url: str) -> Optional[dict]:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        if e.code != 404:
-            logger.warning("Open Library HTTP %s for %s", e.code, url)
+        if e.code == 404:
+            return None
+        logger.warning("Open Library HTTP %s for %s", e.code, url)
+        _mark_transient()
         return None
     except Exception as e:
         logger.warning("Open Library request failed: %s", e)
+        _mark_transient()
         return None
 
 
@@ -319,6 +349,7 @@ def search_hardcover(title: str, token: Optional[str], limit: int = 5) -> list[d
 
 def search_candidates(title: str, author: Optional[str], token: Optional[str]) -> list[dict]:
     """Candidate matches for a book by title/author, Hardcover first then Open Library."""
+    _reset_transient()
     candidates: list[dict] = []
     if token:
         try:
@@ -391,6 +422,7 @@ def fetch_metadata(
     Merges: if Hardcover returns a record but is missing a cover, Open Library's
     cover is grafted in (and vice-versa for the description).
     """
+    _reset_transient()
     primary: Optional[Metadata] = None
     if hardcover_token:
         primary = lookup_hardcover(isbn13 or isbn, hardcover_token)

@@ -54,6 +54,12 @@ async def lifespan(app: FastAPI):
     from . import timezone as tzmod
     logger.info("Time zone: %s%s", tzmod.current(),
                 "" if tzmod.is_configured() else " (TZ not set; defaulting to UTC)")
+    # Auto-sync's queue is in-memory: pick up anything left pending at shutdown.
+    try:
+        from . import calibre_sync
+        calibre_sync.requeue_pending()
+    except Exception as e:
+        logger.warning(f"auto-sync requeue skipped: {e}")
     # Bring the BM25 search index in sync with Calibre, in the background so it
     # never delays startup or pegs the CPU (incremental: only changed books).
     try:

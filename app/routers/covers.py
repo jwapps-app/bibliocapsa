@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
 import logging
 import os
+import threading
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -38,7 +39,11 @@ def _thumb_for(cover_path: str, book_id: int, w: int):
                 return None
             im = im.convert("RGB")
             im.thumbnail((w, w * 3), Image.LANCZOS)  # width-bound; 2:3-ish covers
-            im.save(thumb, "JPEG", quality=80, optimize=True)
+            # Write beside, then swap in: two requests racing on the same size
+            # (a fresh page of covers) could otherwise serve a half-written JPEG.
+            tmp = f"{thumb}.{os.getpid()}.{threading.get_ident()}.tmp"
+            im.save(tmp, "JPEG", quality=80, optimize=True)
+            os.replace(tmp, thumb)
         return thumb
     except Exception as e:
         logger.debug("thumbnail failed for book %s: %s", book_id, e)

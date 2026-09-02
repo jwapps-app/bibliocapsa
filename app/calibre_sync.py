@@ -343,6 +343,25 @@ def queue_auto_sync(book_id: int) -> None:
         logger.debug("auto-sync enqueue failed for book %s", book_id, exc_info=True)
 
 
+def requeue_pending() -> int:
+    """Startup: if auto-sync is on, re-enqueue every pending edit. The queue is
+    in-memory, so edits saved just before a restart used to wait for the next
+    manual sync or another edit to the same book. Returns how many were queued."""
+    if not auto_sync_enabled():
+        return 0
+    try:
+        from . import calibre_overlay as overlay
+        ids = [it["book_id"] for it in overlay.pending()]
+    except Exception as e:
+        logger.warning("auto-sync: could not read pending edits at startup: %s", e)
+        return 0
+    for bid in ids:
+        queue_auto_sync(bid)
+    if ids:
+        logger.info("auto-sync: re-queued %d pending edit(s) from before restart", len(ids))
+    return len(ids)
+
+
 def _ensure_auto_worker() -> None:
     global _auto_worker
     with _auto_lock:
