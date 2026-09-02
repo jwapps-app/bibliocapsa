@@ -40,6 +40,10 @@ def send_to_kindle(book_id: int, request: Request):
     to = (user.get("kindle_email") or "").strip()
     if not to:
         raise HTTPException(status_code=400, detail="Set your Kindle email in Settings first")
+    # Each send is an outbound email with a large attachment through the admin's
+    # SMTP account; meter it per user so it can't be turned into a mail cannon.
+    from .. import ratelimit
+    ratelimit.check(ratelimit.client_key(request, "kindle"), limit=20, window=3600)
     if not mailer.is_configured():
         raise HTTPException(status_code=400, detail="Email isn't configured — ask an admin to set up SMTP in Settings")
 

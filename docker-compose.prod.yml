@@ -36,6 +36,10 @@ services:
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set a strong POSTGRES_PASSWORD in .env}"
       POSTGRES_DB: bibliocapsa
       COOKIE_SECURE: "${COOKIE_SECURE:-auto}"
+      # Wraps stored KOReader sync keys; keep it STABLE once set (see .env.example).
+      SECRET_KEY: "${SECRET_KEY:-}"
+      # Guards creation of the FIRST (admin) account on an exposed instance.
+      SETUP_TOKEN: "${SETUP_TOKEN:-}"
       # Local time zone: where a "day" begins for statistics and read dates.
       # Shown (read-only) in Settings > Reading statistics.
       TZ: "${TZ:-UTC}"

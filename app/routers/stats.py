@@ -35,13 +35,20 @@ def _user(request: Request) -> dict:
     return u
 
 
-def _finished_in_year(user_id: int, year: int) -> list[dict]:
+def _finished_in_year(user: dict, year: int) -> list[dict]:
     """Books finished in `year`, as [{book_id, book_source, date_read}], merging
     TWO sources of the read date so it doesn't matter where it came from:
       1. the mapped Calibre "date read" column (where Calibre/Goodreads/KOReader
          read dates all live — this is the library's source of truth), and
       2. the per-user read_log (native/physical books, manual marks, re-reads).
-    Deduped by (source, book_id)."""
+    Deduped by (source, book_id).
+
+    Scoped to the caller's genre allow-list on BOTH sources: the Calibre column
+    is library-wide, so without the predicate a restricted member's year-in-
+    review named books (title, author, genres) they are not allowed to see."""
+    from .. import access
+    allowed = access.get_restriction(user)
+    user_id = user["id"]
     seen: dict = {}  # (source, book_id) -> date_read
     # 1) The mapped Calibre "date read" column. The DATE is the signal — any book
     #    with a read date in `year` counts, regardless of a separate read flag
@@ -54,8 +61,11 @@ def _finished_in_year(user_id: int, year: int) -> list[dict]:
             with get_conn() as cal:
                 dc = cal.execute("SELECT id FROM custom_columns WHERE label = ?", (col_date,)).fetchone()
                 if dc:
+                    pred, pp = access.calibre_predicate(allowed, "b")
+                    where = f" AND {pred}" if pred else ""
                     for r in cal.execute(
-                        f"SELECT book, value FROM custom_column_{int(dc['id'])} WHERE value IS NOT NULL"
+                        f"SELECT c.book AS book, c.value AS value FROM custom_column_{int(dc['id'])} c "
+                        f"JOIN books b ON b.id = c.book WHERE c.value IS NOT NULL{where}", pp
                     ).fetchall():
                         d = str(r["value"])[:10]
                         if d[:4] == str(year):
@@ -68,7 +78,25 @@ def _finished_in_year(user_id: int, year: int) -> list[dict]:
         cur = conn.cursor()
         cur.execute("SELECT book_id, book_source, date_read FROM read_log "
                     "WHERE user_id=%s AND date_read LIKE %s", (user_id, f"{year}-%"))
-        for r in cur.fetchall():
+        rows = cur.fetchall()
+        # Native rows: check categories against the allow-list too.
+        nat_ok = None
+        if allowed is not None:
+            nat_ids = [r["book_id"] for r in rows if r["book_source"] == "native"]
+            nat_ok = set()
+            if nat_ids:
+                cur.execute("SELECT id, categories FROM native_books WHERE id = ANY(%s)", (nat_ids,))
+                nat_ok = {r["id"] for r in cur.fetchall()
+                          if access.is_native_allowed(r.get("categories"), allowed)}
+        for r in rows:
+            if r["book_source"] == "native" and nat_ok is not None and r["book_id"] not in nat_ok:
+                continue
+            if r["book_source"] == "calibre" and allowed is not None:
+                # A manual mark on a Calibre book the member can't see: skip.
+                from ..database import get_conn as _gc
+                with _gc() as cal:
+                    if not access.is_calibre_book_allowed(cal, r["book_id"], allowed):
+                        continue
             seen[(r["book_source"], r["book_id"])] = r["date_read"]
     finally:
         conn.close()
@@ -81,19 +109,19 @@ class GoalBody(BaseModel):
     target: int
 
 
-def _goal_state(user_id: int, year: int) -> dict:
+def _goal_state(user: dict, year: int) -> dict:
     """The user's target (if any) + how many books they've finished that year
     (from read_log, which logs each dated finish incl. re-reads)."""
     from .settings import _pg
     conn = _pg()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT target FROM reading_goals WHERE user_id=%s AND year=%s", (user_id, year))
+        cur.execute("SELECT target FROM reading_goals WHERE user_id=%s AND year=%s", (user["id"], year))
         row = cur.fetchone()
         target = row["target"] if row else None
     finally:
         conn.close()
-    count = len(_finished_in_year(user_id, year))
+    count = len(_finished_in_year(user, year))
     return {"year": year, "target": target, "count": count}
 
 
@@ -102,7 +130,7 @@ def get_goal(request: Request, year: int = 0):
     u = _user(request)
     if not year:
         year = datetime.now(timezone.utc).year
-    return _goal_state(u["id"], year)
+    return _goal_state(u, year)
 
 
 @router.put("/goal", summary="Set the reading goal for a year (target 0 clears it)")
@@ -125,7 +153,7 @@ def set_goal(body: GoalBody, request: Request):
         conn.commit()
     finally:
         conn.close()
-    return _goal_state(u["id"], body.year)
+    return _goal_state(u, body.year)
 
 
 @router.get("/year", summary="Year-in-review summary for the current user")
@@ -137,7 +165,7 @@ def year_review(request: Request, year: int = 0):
     from .settings import _pg
     from ..database import get_conn
 
-    rows = _finished_in_year(u["id"], year)
+    rows = _finished_in_year(u, year)
 
     by_month = [0] * 12
     by_format = {"digital": 0, "physical": 0}

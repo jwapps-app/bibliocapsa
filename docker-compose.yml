@@ -28,6 +28,10 @@ services:
       # arrived over HTTPS — so IP/HTTP users aren't locked out, while HTTPS users
       # still get a Secure cookie. Force with "true"/"false" if you must.
       COOKIE_SECURE: "${COOKIE_SECURE:-auto}"
+      # Wraps stored KOReader sync keys; keep it STABLE once set (see .env.example).
+      SECRET_KEY: "${SECRET_KEY:-}"
+      # Guards creation of the FIRST (admin) account on an exposed instance.
+      SETUP_TOKEN: "${SETUP_TOKEN:-}"
       TZ: "${TZ:-UTC}"
     depends_on:
       db:

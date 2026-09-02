@@ -14,7 +14,7 @@ the registration `password` and the `x-auth-key` header, so we simply store
 and compare that hash — the server never handles a plaintext password.
 """
 
-from fastapi import APIRouter, Header
+from fastapi import APIRouter, Header, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional
@@ -34,11 +34,29 @@ def _err(status: int, code: int, message: str) -> JSONResponse:
     return JSONResponse(status_code=status, content={"code": code, "message": message})
 
 
-def _check_auth(username: Optional[str], key: Optional[str]) -> bool:
+def _check_auth(request: Request, username: Optional[str], key: Optional[str]) -> bool:
     """KOReader sends md5(password) as x-auth-key; compare it to the shared
-    `kosync_key` on the unified users account (case-insensitive username)."""
+    `kosync_key` on the unified users account (case-insensitive username).
+
+    Throttled like the web login and HTTP Basic paths: these routes are
+    auth-exempt in the middleware, so without this an online guess against a
+    KOSync key costs one indexed query -- an unthrottled password oracle.
+    Only FAILURES count (KOReader resends credentials on every request, so a
+    correct device is never slowed)."""
     if not username or not key:
         return False
+    from .. import auth
+    ip = auth.client_ip(request)
+    fkey = f"{username.lower()}|{ip}"
+    if auth._basic_throttled(fkey, ip, scope="kosync"):
+        return False
+    ok = _check_key(username, key)
+    if not ok:
+        auth._note_basic_failure(fkey, ip, scope="kosync")
+    return ok
+
+
+def _check_key(username: str, key: str) -> bool:
     conn = _pg()
     try:
         cur = conn.cursor()
@@ -81,10 +99,11 @@ def users_create(body: UserCreate):
 
 @router.get("/users/auth", tags=["KOSync"], summary="Verify KOReader sync credentials")
 def users_auth(
+    request: Request,
     x_auth_user: Optional[str] = Header(None),
     x_auth_key: Optional[str] = Header(None),
 ):
-    if not _check_auth(x_auth_user, x_auth_key):
+    if not _check_auth(request, x_auth_user, x_auth_key):
         return _err(401, 2001, "Unauthorized")
     return {"authorized": "OK"}
 
@@ -101,10 +120,11 @@ class ProgressBody(BaseModel):
 @router.put("/syncs/progress", tags=["KOSync"], summary="Upload reading progress")
 def put_progress(
     body: ProgressBody,
+    request: Request,
     x_auth_user: Optional[str] = Header(None),
     x_auth_key: Optional[str] = Header(None),
 ):
-    if not _check_auth(x_auth_user, x_auth_key):
+    if not _check_auth(request, x_auth_user, x_auth_key):
         return _err(401, 2001, "Unauthorized")
     if not body.document:
         return _err(400, 2003, "Invalid request")
@@ -137,10 +157,11 @@ def put_progress(
 @router.get("/syncs/progress/{document}", tags=["KOSync"], summary="Fetch reading progress")
 def get_progress(
     document: str,
+    request: Request,
     x_auth_user: Optional[str] = Header(None),
     x_auth_key: Optional[str] = Header(None),
 ):
-    if not _check_auth(x_auth_user, x_auth_key):
+    if not _check_auth(request, x_auth_user, x_auth_key):
         return _err(401, 2001, "Unauthorized")
     conn = _pg()
     try:

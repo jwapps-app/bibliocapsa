@@ -97,18 +97,37 @@ def stats_path(username: str):
     base = os.path.join(WEBDAV_DIR, username)
     if not os.path.isdir(base):
         return None
+    # Only the file KOReader actually writes. This used to fall back to ANY
+    # *.sqlite3 in the folder -- a user-controlled path via WebDAV.
     cands = glob.glob(os.path.join(base, "**", "statistics.sqlite3"), recursive=True)
-    if not cands:
-        cands = glob.glob(os.path.join(base, "**", "*.sqlite3"), recursive=True)
     return max(cands, key=os.path.getsize) if cands else None
+
+
+# The statistics file is uploaded by the user over WebDAV, so it is untrusted
+# input to every query below. Two guards: the schema must look like KOReader's,
+# and no single query may run longer than this before SQLite aborts it, so a
+# crafted file can't pin a worker thread.
+_QUERY_BUDGET_SECS = 5.0
+_REQUIRED_TABLES = {"book", "page_stat_data"}
 
 
 def _open(username: str):
     p = stats_path(username)
     if not p:
         return None
-    conn = sqlite3.connect(f"file:{p}?mode=ro", uri=True)
+    conn = sqlite3.connect(f"file:{p}?mode=ro", uri=True, timeout=5)
     conn.row_factory = sqlite3.Row
+    try:
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if not _REQUIRED_TABLES <= tables:
+            conn.close()
+            return None
+    except sqlite3.Error:
+        conn.close()
+        return None
+    import time as _t
+    deadline = _t.monotonic() + _QUERY_BUDGET_SECS
+    conn.set_progress_handler(lambda: 1 if _t.monotonic() > deadline else 0, 10_000)
     return conn
 
 

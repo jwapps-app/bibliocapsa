@@ -30,7 +30,8 @@ def _warn_insecure_config():
                        "Set a strong POSTGRES_PASSWORD before exposing this instance.")
     if os.getenv("COOKIE_SECURE", "auto").strip().lower() in ("0", "false", "no"):
         logger.warning("⚠ COOKIE_SECURE is forced off — session cookies won't be marked Secure even "
-                       "over HTTPS. The default 'auto' handles this correctly; only force it if you must.")
+                       "over HTTPS. The default 'auto' detects HTTPS via X-Forwarded-Proto or "
+                       "Cloudflare's CF-Visitor; set COOKIE_SECURE=true if your proxy sends neither.")
     if not os.getenv("SECRET_KEY"):
         logger.warning("⚠ SECRET_KEY is unset — KOReader sync keys are wrapped with a secret derived "
                        "from POSTGRES_PASSWORD. Set a dedicated SECRET_KEY so rotating the DB password "
@@ -137,10 +138,19 @@ def _auth_exempt(path: str, method: str) -> bool:
     return not (path.startswith("/api/") or path.startswith("/opds"))
 
 
+from starlette.concurrency import run_in_threadpool  # noqa: E402
+
+
 @app.middleware("http")
 async def require_auth(request, call_next):
     if not _auth_exempt(request.url.path, request.method):
-        user = auth_lib.authenticate_request(request)
+        # authenticate_request does blocking work -- a Postgres round trip on a
+        # session-cache miss, and for HTTP Basic a 200k-iteration PBKDF2 on a
+        # failed attempt. Run it in the threadpool: on the event loop it would
+        # stall EVERY in-flight request for its duration (including the
+        # healthcheck), so a Postgres pause or a credential-spraying client
+        # could freeze the whole single-worker server.
+        user = await run_in_threadpool(auth_lib.authenticate_request, request)
         if not user:
             return JSONResponse(status_code=401, content={"detail": "Authentication required"})
         request.state.user = user

@@ -6,7 +6,7 @@ and the feed is filtered by the signed-in member's genre access. Navigation by
 series and by author is provided so large libraries are browsable on-device.
 """
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Query
 from fastapi.responses import Response
 from datetime import datetime, timezone
 from ..database import get_conn
@@ -137,7 +137,7 @@ def opds_root(request: Request):
 
 # ── All books (acquisition) ───────────────────────────────────────────────────
 @router.get("/books", summary="OPDS all books acquisition feed")
-def opds_books(request: Request, page: int = 1, page_size: int = 50):
+def opds_books(request: Request, page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200)):
     base = ""  # root-relative hrefs so clients resolve against the URL they reached us on
     now = datetime.now(tz=timezone.utc).isoformat()
     offset = (page - 1) * page_size
@@ -161,7 +161,7 @@ def opds_books(request: Request, page: int = 1, page_size: int = 50):
 
 # ── By series ─────────────────────────────────────────────────────────────────
 @router.get("/series", summary="OPDS series navigation feed")
-def opds_series(request: Request, page: int = 1, page_size: int = 60):
+def opds_series(request: Request, page: int = Query(1, ge=1), page_size: int = Query(60, ge=1, le=200)):
     base = ""  # root-relative hrefs so clients resolve against the URL they reached us on
     now = datetime.now(tz=timezone.utc).isoformat()
     offset = (page - 1) * page_size
@@ -230,7 +230,7 @@ def opds_series_books(series_id: int, request: Request):
 
 # ── By author ─────────────────────────────────────────────────────────────────
 @router.get("/authors", summary="OPDS author navigation feed")
-def opds_authors(request: Request, page: int = 1, page_size: int = 60):
+def opds_authors(request: Request, page: int = Query(1, ge=1), page_size: int = Query(60, ge=1, le=200)):
     base = ""  # root-relative hrefs so clients resolve against the URL they reached us on
     now = datetime.now(tz=timezone.utc).isoformat()
     offset = (page - 1) * page_size
@@ -304,14 +304,20 @@ def opds_shelves(request: Request):
     now = datetime.now(tz=timezone.utc).isoformat()
     from .shelves import _pg, _ensure_tables
     _ensure_tables()
+    user = getattr(request.state, "user", None) or {}
     conn = _pg()
     try:
         cur = conn.cursor()
+        # Same visibility rule as /api/shelves: your own, shared, or legacy
+        # (owner_id NULL). This feed used to list EVERY user's private shelves.
         cur.execute(
             """SELECT s.id, s.name, s.is_smart,
                       CASE WHEN s.is_smart THEN NULL
                            ELSE (SELECT COUNT(*) FROM shelf_books sb WHERE sb.shelf_id = s.id) END AS c
-               FROM shelves s ORDER BY s.is_smart DESC, s.name ASC"""
+               FROM shelves s
+               WHERE s.owner_id = %s OR s.owner_id IS NULL OR s.is_shared
+               ORDER BY s.is_smart DESC, s.name ASC""",
+            (user.get("id"),),
         )
         rows = cur.fetchall()
     finally:
@@ -384,6 +390,12 @@ def opds_shelf_books(shelf_id: int, request: Request):
         cur = conn.cursor()
         cur.execute("SELECT * FROM shelves WHERE id = %s", (shelf_id,))
         shelf = cur.fetchone()
+        # Visibility: own shelf, or a shared / legacy (owner_id NULL) one --
+        # mirrors /api/shelves/{id}/books. Another user's private shelf is a
+        # 404 here, not a 403, so it can't be enumerated by id.
+        if shelf and not (shelf["owner_id"] is None or shelf["is_shared"]
+                          or (user and shelf["owner_id"] == user["id"])):
+            shelf = None
         title = shelf["name"] if shelf else "Shelf"
         cal_ids = []
         if shelf and shelf["is_smart"] and shelf["smart_rules"]:

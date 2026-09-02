@@ -11,6 +11,8 @@ from email.utils import formatdate
 from xml.sax.saxutils import escape
 
 from fastapi import APIRouter, Request, Response, HTTPException
+from fastapi.responses import FileResponse
+from starlette.concurrency import run_in_threadpool
 
 router = APIRouter()
 ROOT = os.getenv("WEBDAV_DIR", "/app/webdav")
@@ -67,7 +69,9 @@ def _prop(href: str, name: str, is_dir: bool, size: int, mtime: float) -> str:
 @router.api_route("", methods=["OPTIONS", "PROPFIND", "GET", "HEAD", "PUT", "MKCOL", "DELETE"])
 @router.api_route("/{path:path}", methods=["OPTIONS", "PROPFIND", "GET", "HEAD", "PUT", "MKCOL", "DELETE"])
 async def webdav(request: Request, path: str = ""):
-    user = _require_user(request)
+    # /dav is auth-exempt in the middleware, so the credential check happens
+    # here -- in the threadpool, since a Basic-auth miss costs a PBKDF2 run.
+    user = await run_in_threadpool(_require_user, request)
     username = user["username"]
     base, full = _resolve(username, path)
     os.makedirs(base, exist_ok=True)
@@ -108,22 +112,45 @@ async def webdav(request: Request, path: str = ""):
         headers = {"Content-Length": str(st.st_size), "Last-Modified": formatdate(st.st_mtime, usegmt=True)}
         if m == "HEAD":
             return Response(status_code=200, headers=headers)
-        with open(full, "rb") as f:
-            data = f.read()
-        return Response(content=data, media_type="application/octet-stream", headers=headers)
+        # Streamed, not read into memory on the event loop (a statistics
+        # database is 10-20 MB at a few years of reading).
+        return FileResponse(full, media_type="application/octet-stream",
+                            headers={"Last-Modified": headers["Last-Modified"]})
 
     if m == "PUT":
-        body = await request.body()
-        # Per-file and per-user quota so a client can't fill the host disk.
-        if len(body) > MAX_PUT_BYTES:
+        # Refuse oversize uploads BEFORE reading them. The body used to be
+        # buffered in full and only then measured, so a multi-GB PUT from any
+        # member sat in RAM until the 413 -- an OOM, not a quota.
+        declared = request.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > MAX_PUT_BYTES:
             raise HTTPException(status_code=413, detail="File too large")
         replacing = os.path.getsize(full) if os.path.exists(full) else 0
-        if _dir_size(base) - replacing + len(body) > MAX_USER_BYTES:
+        used = await run_in_threadpool(_dir_size, base)
+        if declared and declared.isdigit() and used - replacing + int(declared) > MAX_USER_BYTES:
             raise HTTPException(status_code=507, detail="Storage quota exceeded")
         os.makedirs(os.path.dirname(full), exist_ok=True)
         existed = os.path.exists(full)
-        with open(full, "wb") as f:
-            f.write(body)
+        # Stream to a sibling temp file with a running cap, then swap it in
+        # atomically: a concurrent reader (another device's GET, or the stats
+        # page) sees either the old file or the new one, never a torn write.
+        tmp = full + ".uploading"
+        received = 0
+        try:
+            with open(tmp, "wb") as f:
+                async for chunk in request.stream():
+                    received += len(chunk)
+                    if received > MAX_PUT_BYTES:
+                        raise HTTPException(status_code=413, detail="File too large")
+                    if used - replacing + received > MAX_USER_BYTES:
+                        raise HTTPException(status_code=507, detail="Storage quota exceeded")
+                    f.write(chunk)
+            os.replace(tmp, full)
+        finally:
+            if os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
         return Response(status_code=204 if existed else 201)
 
     if m == "MKCOL":

@@ -37,7 +37,12 @@ def _cookie_is_secure(request: Request) -> bool:
     # HTTP but the original request was HTTPS).
     proto = (request.headers.get("x-forwarded-proto", "").split(",")[0].strip()
              or request.url.scheme)
-    return proto == "https"
+    if proto == "https":
+        return True
+    # Behind Cloudflare the shipped Caddy terminates on plain :80 and rewrites
+    # X-Forwarded-Proto to "http", so the above can't see the real scheme. CF
+    # sends its own header, which Caddy passes through untouched.
+    return '"https"' in request.headers.get("cf-visitor", "")
 
 # ── Simple in-memory login rate limiter (brute-force protection) ──────────────
 # Two sliding windows: per-account (source-independent, so an account can't be
@@ -46,24 +51,57 @@ def _cookie_is_secure(request: Request) -> bool:
 _LOGIN_BUCKETS: dict[str, list[float]] = {}
 
 
-def _rate_ok(key: str, limit: int, window: int = 300) -> bool:
+_LOGIN_WINDOW = 300
+
+
+def _login_failures(key: str) -> int:
     now = time.time()
-    bucket = [t for t in _LOGIN_BUCKETS.get(key, []) if now - t < window]
-    bucket.append(now)
+    bucket = [t for t in _LOGIN_BUCKETS.get(key, []) if now - t < _LOGIN_WINDOW]
     _LOGIN_BUCKETS[key] = bucket
+    return len(bucket)
+
+
+def _note_login_failure(*keys: str) -> None:
+    now = time.time()
+    for key in keys:
+        bucket = [t for t in _LOGIN_BUCKETS.get(key, []) if now - t < _LOGIN_WINDOW]
+        bucket.append(now)
+        _LOGIN_BUCKETS[key] = bucket
     if len(_LOGIN_BUCKETS) > 5000:  # crude cap so the dict can't grow unbounded
-        for k in [k for k, v in _LOGIN_BUCKETS.items() if not v or now - v[-1] > window]:
+        for k in [k for k, v in _LOGIN_BUCKETS.items() if not v or now - v[-1] > _LOGIN_WINDOW]:
             _LOGIN_BUCKETS.pop(k, None)
-    return len(bucket) <= limit
+
+
+def _login_throttled(uname: str, ip: str) -> bool:
+    """Only FAILED attempts count: successful logins never consume budget, so a
+    household behind one address can't lock itself out by logging in. The
+    global ceiling is the backstop against a client that forges its IP."""
+    return (_login_failures(f"u:{uname}") >= 10
+            or _login_failures(f"ip:{ip}") >= 40
+            or _login_failures("global") >= 300)
 
 
 from ..pg_database import get_pg as _pg
 
 
 def _is_local_client(request: Request) -> bool:
+    """LAN-only gate for claiming the first (admin) account without a token.
+
+    Two conditions, because a header alone is forgeable:
+      * the address Caddy saw on the socket (X-Forwarded-For, which Caddy sets
+        itself and never forwards from the client) is private/loopback, AND
+      * the request did NOT arrive through Cloudflare -- Cloudflare always
+        stamps CF-Connecting-IP on proxied traffic, so its presence means the
+        internet. A tunnel's traffic reaches Caddy from a private address, so
+        the first test alone would wave it through; a direct client can't
+        remove the header Cloudflare adds, and a LAN client never sends it.
+    Anything more exotic (public LAN, no Caddy) should set SETUP_TOKEN."""
     import ipaddress
+    if auth.via_cloudflare(request):
+        return False
     try:
-        a = ipaddress.ip_address(auth.client_ip(request))
+        xff = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        a = ipaddress.ip_address(xff or (request.client.host if request.client else ""))
         return a.is_private or a.is_loopback or a.is_link_local
     except ValueError:
         return False
@@ -225,10 +263,11 @@ def register(body: RegisterBody, request: Request, response: Response):
 def login(body: LoginBody, request: Request, response: Response):
     ip = auth.client_ip(request)
     uname = body.username.strip().lower()
-    if not _rate_ok(f"u:{uname}", 10) or not _rate_ok(f"ip:{ip}", 40):
+    if _login_throttled(uname, ip):
         raise HTTPException(status_code=429, detail="Too many login attempts. Please wait a few minutes and try again.")
     user = auth._user_by_credentials(body.username.strip(), body.password)
     if not user:
+        _note_login_failure(f"u:{uname}", f"ip:{ip}", "global")
         raise HTTPException(status_code=401, detail="Invalid username or password")
     # Successful login clears that account's failure window.
     _LOGIN_BUCKETS.pop(f"u:{uname}", None)
@@ -240,6 +279,11 @@ def login(body: LoginBody, request: Request, response: Response):
 @router.post("/logout", summary="Log out")
 def logout(request: Request, response: Response):
     token = request.cookies.get(auth.SESSION_COOKIE)
+    if not token:
+        # Bearer-token clients (the iOS app) have no cookie; revoke that session.
+        authz = request.headers.get("authorization", "")
+        if authz.lower().startswith("bearer "):
+            token = authz[7:].strip()
     if token:
         auth.destroy_session(token)
     response.delete_cookie(auth.SESSION_COOKIE, path="/")
@@ -306,6 +350,7 @@ def admin_reset_password(user_id: int, body: PasswordBody, request: Request):
         # Force re-login everywhere by clearing the member's existing sessions.
         cur.execute("DELETE FROM sessions WHERE user_id = %s", (user_id,))
         conn.commit()
+        auth.invalidate_user_sessions(user_id)
     except HTTPException:
         raise
     except Exception as e:
@@ -333,14 +378,20 @@ def update_me(body: MeUpdate, request: Request):
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
     if body.kindle_email is not None:
+        kindle = body.kindle_email.strip()
+        # Free-form text used to go straight into an SMTP envelope; require an
+        # address shape so a typo can't become a bounce storm or an open relay.
+        if kindle and not re.fullmatch(r"[^@\s]{1,64}@[^@\s]{1,255}\.[A-Za-z]{2,}", kindle):
+            raise HTTPException(status_code=400, detail="That doesn't look like an email address")
         conn = _pg()
         try:
             cur = conn.cursor()
             cur.execute("UPDATE users SET kindle_email = %s WHERE id = %s",
-                        (body.kindle_email.strip() or None, user["id"]))
+                        (kindle or None, user["id"]))
             conn.commit()
         finally:
             conn.close()
+        auth.invalidate_user_sessions(user["id"])
     fresh = auth._user_from_session(request.cookies.get(auth.SESSION_COOKIE) or "") or user
     return _public_user(fresh)
 
@@ -366,6 +417,7 @@ def update_preferences(body: PrefsBody, request: Request):
             cur = conn.cursor()
             cur.execute(f"UPDATE users SET {', '.join(sets)} WHERE id = %s", (*params, user["id"]))
             conn.commit()
+            auth.invalidate_user_sessions(user["id"])
         finally:
             conn.close()
     return {"ok": True}
@@ -399,6 +451,7 @@ def change_password(body: PasswordBody, request: Request):
             (user["id"], current_token),
         )
         conn.commit()
+        auth.invalidate_user_sessions(user["id"])
     except HTTPException:
         raise
     except Exception as e:

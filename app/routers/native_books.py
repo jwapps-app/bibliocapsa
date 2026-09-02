@@ -543,7 +543,7 @@ def get_native_cover(book_id: int, request: Request):
                     content_type = tf.read().strip() or "image/jpeg"
             content_type = _safe_image_ct(content_type)
             return Response(content=blob, media_type=content_type,
-                            headers={"Cache-Control": "public, max-age=2592000"})
+                            headers={"Cache-Control": "private, max-age=2592000"})
         except Exception:
             pass
 
@@ -568,7 +568,7 @@ def get_native_cover(book_id: int, request: Request):
             blob, content_type = downloaded
             _cache_cover(book_id, blob, content_type)
             return Response(content=blob, media_type=_safe_image_ct(content_type),
-                            headers={"Cache-Control": "public, max-age=2592000"})
+                            headers={"Cache-Control": "private, max-age=2592000"})
         # fall through to a generated cover if the external fetch fails
 
     # No real cover — serve a Calibre-style generated cover (title + author).
@@ -590,7 +590,7 @@ def _generated_cover(title, author, variant) -> Response:
     from .. import cover_gen
     svg = cover_gen.generate_svg(title or "Untitled", author or "", variant)
     return Response(content=svg.encode("utf-8"), media_type="image/svg+xml",
-                    headers={"Cache-Control": "public, max-age=86400"})
+                    headers={"Cache-Control": "private, max-age=86400"})
 
 
 @router.post("/{book_id}/cover/generate", response_model=NativeBook, summary="Cycle the generated cover style")
@@ -627,12 +627,15 @@ _MAX_COVER_BYTES = 10 * 1024 * 1024  # 10 MB
 
 
 @router.post("/{book_id}/cover", response_model=NativeBook, summary="Upload a cover image for a native book")
-async def upload_native_cover(book_id: int, request: Request, file: UploadFile = File(...)):
+def upload_native_cover(book_id: int, request: Request, file: UploadFile = File(...)):
+    # Plain `def`: file + Postgres I/O belongs in the threadpool, not on the loop.
     _require_admin(request)
     content_type = file.content_type or "image/jpeg"
     if not content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="File must be an image")
-    blob = await file.read()
+    if file.size is not None and file.size > _MAX_COVER_BYTES:
+        raise HTTPException(status_code=413, detail="Image too large (max 10 MB)")
+    blob = file.file.read(_MAX_COVER_BYTES + 1)   # bounded read, never the whole body
     if not blob:
         raise HTTPException(status_code=400, detail="Empty file")
     if len(blob) > _MAX_COVER_BYTES:

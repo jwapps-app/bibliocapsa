@@ -24,11 +24,53 @@
 		-Server
 	}
 
-	@backend path /api/* /opds /opds/* /dav /dav/* /users/* /syncs/* /healthcheck
-	handle @backend {
-		reverse_proxy bibliocapsa:8000
-	}
-	handle {
-		reverse_proxy web:3000
+	# Request-body ceilings, enforced HERE so an oversize body is refused
+	# before it reaches the app (which used to buffer it in full first).
+	# Upload routes get the limit their handler enforces plus headroom;
+	# everything else on the API is JSON and gets a small cap.
+	@uploads path /api/calibre/upload /api/goodreads/import /api/goodreads/preview-shelves
+	@covers  path /api/native/books/*/cover
+	@dav     path /dav /dav/*
+	@backend path /api/* /opds /opds/* /users/* /syncs/* /healthcheck
+
+	route {
+		handle @uploads {
+			request_body {
+				max_size 320MB
+			}
+			reverse_proxy bibliocapsa:8000 {
+				header_up X-Forwarded-For {remote_host}
+			}
+		}
+		handle @covers {
+			request_body {
+				max_size 12MB
+			}
+			reverse_proxy bibliocapsa:8000 {
+				header_up X-Forwarded-For {remote_host}
+			}
+		}
+		handle @dav {
+			request_body {
+				max_size 64MB
+			}
+			reverse_proxy bibliocapsa:8000 {
+				header_up X-Forwarded-For {remote_host}
+			}
+		}
+		handle @backend {
+			request_body {
+				max_size 8MB
+			}
+			# X-Forwarded-For is set from the real socket peer and never taken from
+			# the client, so the app can key rate limits on it. (Cloudflare's own
+			# CF-Connecting-IP and CF-Visitor headers pass through untouched.)
+			reverse_proxy bibliocapsa:8000 {
+				header_up X-Forwarded-For {remote_host}
+			}
+		}
+		handle {
+			reverse_proxy web:3000
+		}
 	}
 }

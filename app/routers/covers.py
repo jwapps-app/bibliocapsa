@@ -82,5 +82,5 @@ def get_cover(book_id: int, request: Request,
     return FileResponse(
         serve_path,
         media_type="image/jpeg",
-        headers={"Cache-Control": "public, max-age=86400"},
+        headers={"Cache-Control": "private, max-age=86400"},  # access-controlled: no shared caches
     )

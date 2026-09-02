@@ -351,16 +351,28 @@ def _run_import(csv_content: str, physical_shelves: Optional[set] = None, auto_e
 
 
 @router.post("/preview-shelves", summary="List the shelves found in a Goodreads CSV (admin)")
-async def preview_shelves(request: Request, file: UploadFile = File(...)):
+def _read_csv_upload(file: UploadFile) -> bytes:
+    """Bounded read of an uploaded CSV: refuse by declared size first, then
+    never read more than the cap + 1 byte, so an oversize body is rejected
+    without ever being held in memory."""
+    cap = 50 * 1024 * 1024
+    if file.size is not None and file.size > cap:
+        raise HTTPException(status_code=413, detail="CSV is too large (max 50 MB)")
+    raw = file.file.read(cap + 1)
+    if len(raw) > cap:
+        raise HTTPException(status_code=413, detail="CSV is too large (max 50 MB)")
+    return raw
+
+
+def preview_shelves(request: Request, file: UploadFile = File(...)):
     """Distinct bookshelf names (with book counts) so the user can pick which ones
-    mean 'physically owned'. Returns the previously-saved selection too."""
+    mean 'physically owned'. Returns the previously-saved selection too.
+    Plain `def`: parsing a 50 MB CSV belongs in the threadpool, not on the loop."""
     _require_admin(request)
     if not file.filename.endswith(".csv"):
         raise HTTPException(status_code=400, detail="Must be a .csv file")
     from collections import Counter
-    raw = await file.read()
-    if len(raw) > 50 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="CSV is too large (max 50 MB)")
+    raw = _read_csv_upload(file)
     content = raw.decode("utf-8-sig")
     counts: Counter = Counter()
     for row in csv.DictReader(io.StringIO(content)):
@@ -377,7 +389,7 @@ async def preview_shelves(request: Request, file: UploadFile = File(...)):
 
 
 @router.post("/import", summary="Import Goodreads CSV export (admin)")
-async def import_goodreads(
+def import_goodreads(
     request: Request,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
@@ -387,9 +399,7 @@ async def import_goodreads(
     _require_admin(request)
     if not file.filename.endswith(".csv"):
         raise HTTPException(status_code=400, detail="Must be a .csv file")
-    content = await file.read()
-    if len(content) > 50 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="CSV is too large (max 50 MB)")
+    content = _read_csv_upload(file)
     csv_content = content.decode("utf-8-sig")
     global _import_status
     if _import_status.get("status") == "running":
@@ -552,12 +562,24 @@ def set_ownership(book_id: int, body: OwnershipUpdate, request: Request):
 
 @router.get("/ratings/{book_id}", summary="Get Goodreads rating for a book")
 def get_rating(book_id: int, request: Request, book_source: str = "calibre"):
+    from .. import access
+    allowed = access.restriction_for_request(request)
     if book_source == "calibre":
-        from .. import access
         from ..database import get_conn
         with get_conn() as _cal:
-            if not access.is_calibre_book_allowed(_cal, book_id, access.restriction_for_request(request)):
+            if not access.is_calibre_book_allowed(_cal, book_id, allowed):
                 raise HTTPException(status_code=404, detail="Not found")
+    elif allowed is not None:
+        # Native books get the same genre wall (this branch used to skip it).
+        pg = _pg()
+        try:
+            cur = pg.cursor()
+            cur.execute("SELECT categories FROM native_books WHERE id=%s", (book_id,))
+            row = cur.fetchone()
+        finally:
+            pg.close()
+        if not row or not access.is_native_allowed(row.get("categories"), allowed):
+            raise HTTPException(status_code=404, detail="Not found")
     try:
         pg = _pg()
         cur = pg.cursor()

@@ -6,7 +6,7 @@ Edits to Calibre books are stored in PostgreSQL and merged over Calibre on read
 Sync to Calibre (POST /sync below). Admin only — these affect the shared library.
 """
 
-from fastapi import APIRouter, HTTPException, Request, UploadFile, File
+from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Query
 from pydantic import BaseModel
 from typing import Optional
 import os
@@ -66,7 +66,8 @@ _MISSING_WHERE = {
 
 
 @router.get("/missing", summary="Digital books missing a metadata field (admin)")
-def missing_books(request: Request, field: str = "description", page: int = 1, page_size: int = 50):
+def missing_books(request: Request, field: str = "description",
+                  page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200)):
     _require_admin(request)
     where = _MISSING_WHERE.get(field)
     if not where:
@@ -318,30 +319,50 @@ def pending_count(request: Request):
 
 
 @router.post("/upload", summary="Upload a new book to queue for Calibre (admin)")
-async def upload_book(request: Request, file: UploadFile = File(...)):
+def upload_book(request: Request, file: UploadFile = File(...)):
+    # A plain `def` on purpose: this runs `ebook-meta` (a Calibre process that
+    # can take many seconds on a large PDF), writes up to 300 MB to disk and
+    # talks to Postgres. As an `async def` all of that ran ON the event loop and
+    # froze every other request for the duration of each upload.
     _require_admin(request)
     from .. import calibre_sync
     ext = os.path.splitext(file.filename or "")[1].lower().lstrip(".")
     if ext not in ALLOWED_UPLOAD_EXT:
         raise HTTPException(status_code=400, detail=f"Unsupported file type .{ext}")
-    blob = await file.read()
-    if not blob:
-        raise HTTPException(status_code=400, detail="Empty file")
-    if len(blob) > MAX_UPLOAD_BYTES:
+    if file.size is not None and file.size > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="File too large (max 300 MB)")
 
     os.makedirs(overlay.UPLOADS_DIR, exist_ok=True)
     stored = f"{uuid.uuid4().hex}.{ext}"
     path = os.path.join(overlay.UPLOADS_DIR, stored)
-    with open(path, "wb") as f:
-        f.write(blob)
+    # Stream from the spooled upload to disk with a running cap, instead of
+    # materialising the whole file as one bytes object first.
+    size = 0
+    try:
+        with open(path, "wb") as out:
+            while True:
+                chunk = file.file.read(1 << 20)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > MAX_UPLOAD_BYTES:
+                    raise HTTPException(status_code=413, detail="File too large (max 300 MB)")
+                out.write(chunk)
+        if size == 0:
+            raise HTTPException(status_code=400, detail="Empty file")
+    except Exception:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        raise
 
     title, authors = calibre_sync.extract_book_metadata(path)
     # ebook-meta echoes the on-disk (uuid) name when a file has no embedded title;
     # fall back to the original upload name in that case.
     if not title or title == os.path.splitext(stored)[0]:
         title = os.path.splitext(file.filename or "Untitled")[0]
-    rec = overlay.add_upload(stored, file.filename, title, authors, ext, len(blob))
+    rec = overlay.add_upload(stored, file.filename, title, authors, ext, size)
     return rec
 
 
