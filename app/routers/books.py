@@ -408,9 +408,16 @@ def _merged_all(request, base_url, page, page_size, offset, search, sort_dir, al
         pg3.close()
 
     items = []
+    # The date-added sort key IS the real "entered the collection" timestamp, so
+    # hand it back rather than making clients guess order-only.
+    added_key = {(src, bid): k for src, bid, k in page_slice} if by_date else {}
     for src, bid, _ in page_slice:
         summary = cal_map.get(bid) if src == "calibre" else nat_map.get(bid)
         if summary is not None:
+            if by_date:
+                k = added_key.get((src, bid))
+                if isinstance(k, (int, float)) and k > 0:
+                    summary.added = float(k)
             items.append(summary)
 
     total = calibre_total + native_total

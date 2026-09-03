@@ -48,6 +48,11 @@ class BookSummary(BaseModel):
     reading_status: Optional[str] = None      # 'read' | 'reading' | None (unread)
     date_read: Optional[str] = None           # 'YYYY-MM-DD' when finished
     last_modified: Optional[datetime] = None
+    # When the book entered the collection, as epoch seconds. Only populated by
+    # the date-added sort, which already computes it as its sort key. Clients
+    # ordering locally need the real value: without it they can only infer rank,
+    # and any locally-added book gets buried under the whole ranked page.
+    added: Optional[float] = None
     book_source: str = "calibre"
     has_physical: bool = False
     has_digital: bool = True

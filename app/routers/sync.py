@@ -19,6 +19,29 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+@router.get("/ids", summary="All visible Calibre book ids (deletion reconcile)")
+def sync_ids(request: Request):
+    """Every Calibre id the caller can see.
+
+    The delta feed reports adds and changes but never deletions: it reads
+    Calibre's `books` table, and a deleted book simply stops existing there, so
+    there is nothing to report. A client syncing incrementally therefore kept
+    showing books that had been removed on the server until it did a full
+    re-pull. Ids alone are tiny (a few tens of KB for a large library) and let a
+    client reconcile deletions on every sync.
+    """
+    allowed = access.restriction_for_request(request)
+    conds, params = [], []
+    if allowed is not None:
+        pred, pp = access.calibre_predicate(allowed, "b")
+        conds.append(pred)
+        params += list(pp)
+    where = ("WHERE " + " AND ".join(conds)) if conds else ""
+    with get_conn() as conn:
+        rows = conn.execute(f"SELECT b.id FROM books b {where}", params).fetchall()
+    return {"ids": [r["id"] for r in rows]}
+
+
 @router.get("", response_model=SyncResponse, summary="Delta sync for iOS app")
 def sync(
     request: Request,
