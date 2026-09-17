@@ -149,7 +149,10 @@ from starlette.concurrency import run_in_threadpool  # noqa: E402
 
 @app.middleware("http")
 async def require_auth(request, call_next):
-    if not _auth_exempt(request.url.path, request.method):
+    # scope["path"] is what the router dispatches on. request.url.path is rebuilt
+    # from the Host header, so a Host like "x/api/health?" made the gate see an
+    # exempt path while the router served a protected one.
+    if not _auth_exempt(request.scope.get("path", ""), request.method):
         # authenticate_request does blocking work -- a Postgres round trip on a
         # session-cache miss, and for HTTP Basic a 200k-iteration PBKDF2 on a
         # failed attempt. Run it in the threadpool: on the event loop it would

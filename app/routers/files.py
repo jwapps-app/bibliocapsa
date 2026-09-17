@@ -134,8 +134,8 @@ def serve_book_file(book_id: int, fmt: str, request: Request,
         file_path,
         media_type=media_type,
         filename=filename,
-        headers={
-            "Content-Disposition": f'{disposition}; filename="{filename}"',
-            "Cache-Control": "private, max-age=3600",
-        }
+        # Not hand-built: a raw non-Latin title can't be encoded as a header and
+        # turned the download into a 500. FileResponse emits filename*=UTF-8''...
+        content_disposition_type=disposition,
+        headers={"Cache-Control": "private, max-age=3600"},
     )

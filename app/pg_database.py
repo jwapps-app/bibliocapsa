@@ -471,6 +471,26 @@ def init_postgres():
                   )
             """)
 
+        # Pending Calibre edits carry their ORIGIN: 'user' (a deliberate edit --
+        # eligible for auto-sync) or 'enrich' (a bulk-enrichment PROPOSAL that
+        # must wait for review on the Sync page). Before this column existed the
+        # two were indistinguishable, so auto-sync pushed proposals along with
+        # whatever field the user had just edited, and the startup re-queue
+        # pushed all of them. On first migration, rows that look like
+        # enrichment output are marked as such (the safe direction: a mislabelled
+        # user edit merely waits for the manual Sync, which applies everything).
+        cur.execute("SELECT 1 FROM information_schema.columns "
+                    "WHERE table_name='calibre_edits' AND column_name='origin'")
+        if not cur.fetchone():
+            cur.execute("ALTER TABLE calibre_edits ADD COLUMN origin TEXT NOT NULL DEFAULT 'user'")
+            cur.execute("""
+                UPDATE calibre_edits e SET origin = 'enrich'
+                WHERE e.field IN ('comment','pubdate','publisher','isbn','series')
+                  AND EXISTS (SELECT 1 FROM calibre_enrich_log l
+                              WHERE l.book_id = e.book_id AND l.status = 'filled')
+            """)
+            logger.info("calibre_edits.origin added; %d pending row(s) marked as enrichment proposals", cur.rowcount)
+
         # Security: wrap any legacy bare-md5 KOReader keys with the server HMAC so
         # a DB leak can't be rainbow-tabled back to passwords. A bare md5 hex is
         # 32 chars; a wrapped sha256 hex is 64 — so this is idempotent and only

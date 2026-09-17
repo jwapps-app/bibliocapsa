@@ -44,7 +44,7 @@ export function CalibreEditor({ book }: { book: BookDetail }) {
     series_index: book.series?.series_index != null ? String(book.series.series_index) : "",
     tags: book.tags.map(t => t.name),
     publisher: book.publisher ?? "",
-    pubdate: book.pubdate ?? "",
+    pubdate: (book.pubdate ?? "").slice(0, 10),  // API sends an ISO datetime; the date input needs YYYY-MM-DD
     rating: book.rating ? Math.round(book.rating) : 0,
     isbn: book.isbn ?? "",
     comment: book.comment ?? "",
@@ -123,7 +123,7 @@ export function CalibreEditor({ book }: { book: BookDetail }) {
           </Field>
           <Field label="Series #"><input className="bc-input" value={f.series_index} onChange={set("series_index")} inputMode="decimal" /></Field>
           <Field label="Publisher"><input className="bc-input" value={f.publisher} onChange={set("publisher")} /></Field>
-          <Field label="Published date"><input className="bc-input" value={f.pubdate} onChange={set("pubdate")} placeholder="YYYY-MM-DD" /></Field>
+          <Field label="Published date"><input className="bc-input" type="date" value={f.pubdate} onChange={set("pubdate")} /></Field>
           <Field label="ISBN"><input className="bc-input" value={f.isbn} onChange={set("isbn")} /></Field>
           <Field label="Rating (0–5)"><input className="bc-input" value={String(f.rating)} onChange={e => setF(p => ({ ...p, rating: Math.max(0, Math.min(5, Number(e.target.value) || 0)) }))} inputMode="numeric" /></Field>
         </div>

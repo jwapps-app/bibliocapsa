@@ -10,7 +10,7 @@ function LoginInner() {
   // Only same-origin path redirects: a raw ?next= would allow an off-site
   // redirect after login (e.g. ?next=https://evil.example).
   const rawNext = params.get("next") || "/";
-  const next = rawNext.startsWith("/") && !rawNext.startsWith("//") ? rawNext : "/";
+  const next = safeNext(rawNext);
 
   const [setupRequired, setSetupRequired] = useState<boolean | null>(null);
   const [username, setUsername] = useState("");
@@ -129,6 +129,21 @@ function Label({ children }: { children: React.ReactNode }) {
       {children}
     </div>
   );
+}
+
+/** A same-origin path to return to after login, or "/".
+ *  A prefix check is not enough: browsers treat "\\" as "/" in http(s) URLs, so
+ *  "/\\evil.example" passed `startsWith("/") && !startsWith("//")` and then
+ *  navigated off-site. Resolve it the way the browser will and compare origins. */
+function safeNext(raw: string): string {
+  try {
+    if (!raw.startsWith("/") || /[\\\u0000-\u001f]/.test(raw)) return "/";
+    const u = new URL(raw, window.location.origin);
+    if (u.origin !== window.location.origin) return "/";
+    return u.pathname + u.search + u.hash;
+  } catch {
+    return "/";
+  }
 }
 
 export default function LoginPage() {

@@ -36,7 +36,12 @@ def get_restriction(user: Optional[dict]) -> Optional[set]:
 
 
 def restriction_for_request(request) -> Optional[set]:
+    """The caller's allow-list. Fails CLOSED: a data route reached without an
+    authenticated user is a bug in the auth gate, not an unrestricted caller."""
     user = getattr(request.state, "user", None)
+    if not user:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=401, detail="Authentication required")
     return get_restriction(user)
 
 

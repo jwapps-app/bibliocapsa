@@ -41,7 +41,12 @@ def get_edits(book_ids) -> dict:
         conn.close()
 
 
-def set_edits(book_id: int, fields: dict) -> None:
+def set_edits(book_id: int, fields: dict, origin: str = "user") -> None:
+    """Queue pending edits. `origin` is 'user' for a deliberate edit (eligible
+    for auto-sync) or 'enrich' for a bulk-enrichment proposal awaiting review.
+    A proposal never replaces a pending USER edit to the same field -- the
+    person's own value wins over a guess."""
+    origin = "enrich" if origin == "enrich" else "user"
     conn = _pg()
     try:
         cur = conn.cursor()
@@ -49,13 +54,53 @@ def set_edits(book_id: int, fields: dict) -> None:
             # Standard fields, or custom columns keyed "custom:<label>".
             if k not in EDITABLE_FIELDS and not k.startswith("custom:"):
                 continue
+            guard = " WHERE calibre_edits.origin <> 'user'" if origin == "enrich" else ""
             cur.execute(
-                """INSERT INTO calibre_edits (book_id, field, value, updated_at)
-                   VALUES (%s, %s, %s::jsonb, NOW())
-                   ON CONFLICT (book_id, field) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()""",
-                (book_id, k, json.dumps(v)),
+                f"""INSERT INTO calibre_edits (book_id, field, value, origin, updated_at)
+                    VALUES (%s, %s, %s::jsonb, %s, NOW())
+                    ON CONFLICT (book_id, field) DO UPDATE
+                      SET value = EXCLUDED.value, origin = EXCLUDED.origin, updated_at = NOW(){guard}""",
+                (book_id, k, json.dumps(v), origin),
             )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def get_user_edits(book_id: int) -> dict:
+    """{field: value} of pending edits the USER made for one book -- the only
+    ones auto-sync may push. Enrichment proposals are excluded."""
+    conn = _pg()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT field, value FROM calibre_edits WHERE book_id = %s AND origin = 'user'", (book_id,))
+        return {r["field"]: r["value"] for r in cur.fetchall()}
+    finally:
+        conn.close()
+
+
+def user_pending_book_ids() -> list:
+    """Book ids that have at least one pending USER edit."""
+    conn = _pg()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT DISTINCT book_id FROM calibre_edits WHERE origin = 'user' ORDER BY book_id")
+        return [r["book_id"] for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def discard_if_unchanged(book_id: int, field: str, value) -> bool:
+    """Delete a pending edit ONLY if it still holds `value`, in one statement.
+    The old read-compare-then-delete left a gap in which a newer edit saved
+    between the read and the delete was erased."""
+    conn = _pg()
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM calibre_edits WHERE book_id = %s AND field = %s AND value = %s::jsonb",
+                    (book_id, field, json.dumps(value)))
+        conn.commit()
+        return cur.rowcount > 0
     finally:
         conn.close()
 

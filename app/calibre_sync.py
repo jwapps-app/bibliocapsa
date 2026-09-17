@@ -261,8 +261,22 @@ def add_upload_to_calibre(rec: dict, library: str = LIBRARY) -> tuple[bool, str]
             if rec.get("authors"):
                 fields += ["--field", f"authors:{rec['authors'].replace(',', ' & ')}"]
             if fields:
-                subprocess.run([CALIBREDB, "set_metadata", new_id, *fields, *_target_args(library)],
-                               capture_output=True, text=True, timeout=120)
+                ok2, out2 = _run([CALIBREDB, "set_metadata", new_id, *fields, *_target_args(library)])
+                if not ok2:
+                    # The book IS in Calibre now, so this upload must not be retried
+                    # (that would add it twice). Keep the user's title/authors as a
+                    # normal pending edit on the new book instead of dropping them.
+                    logger.warning("Added book %s but could not set its metadata: %s", new_id, out2)
+                    pending = {}
+                    if rec.get("title"):
+                        pending["title"] = rec["title"]
+                    if rec.get("authors"):
+                        pending["authors"] = [a.strip() for a in rec["authors"].split(",") if a.strip()]
+                    try:
+                        overlay.set_edits(int(new_id), pending)
+                    except Exception:
+                        logger.exception("could not queue metadata for new book %s", new_id)
+                    out += f" | metadata not applied yet (queued as a pending edit): {_explain(out2)}"
         return True, out
     except Exception as e:
         return False, str(e)
@@ -303,10 +317,10 @@ def _discard_applied(book_id: int, pushed: dict) -> None:
     was in flight, the newer value must survive to be synced, not be discarded
     on the strength of the older write."""
     from . import calibre_overlay as overlay
-    current = (overlay.get_edits([book_id]) or {}).get(book_id) or {}
     for field, value in pushed.items():
-        if field in current and current[field] == value:
-            overlay.discard(book_id, field)
+        # One conditional DELETE per field: compare-and-delete is atomic in the
+        # database, so there is no window for a newer edit to be erased.
+        overlay.discard_if_unchanged(book_id, field, value)
 
 
 def auto_sync_enabled() -> bool:
@@ -351,7 +365,7 @@ def requeue_pending() -> int:
         return 0
     try:
         from . import calibre_overlay as overlay
-        ids = [it["book_id"] for it in overlay.pending()]
+        ids = overlay.user_pending_book_ids()   # never enrichment proposals
     except Exception as e:
         logger.warning("auto-sync: could not read pending edits at startup: %s", e)
         return 0
@@ -400,9 +414,14 @@ def _auto_apply_one(book_id: int) -> None:
     with _calibre_write_lock:
         # Re-read INSIDE the lock: if a manual sync just applied this book,
         # nothing is pending any more and this is a no-op instead of a rewrite.
-        fields = (overlay.get_edits([book_id]) or {}).get(book_id) or {}
+        # USER edits only. Enrichment proposals share the overlay but must wait
+        # for review on the Sync page; pushing "every pending field of the book"
+        # applied them as a side effect of editing anything else.
+        fields = overlay.get_user_edits(book_id)
         if not fields:
             return
+        if not auto_sync_enabled():
+            return  # switched off (or the server was removed) while this job was queued
         if not _existing_book_ids([book_id], LIBRARY):
             return  # gone from Calibre; the manual sync path handles dropping it
 

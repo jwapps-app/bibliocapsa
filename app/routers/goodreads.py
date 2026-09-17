@@ -350,7 +350,6 @@ def _run_import(csv_content: str, physical_shelves: Optional[set] = None, auto_e
         _import_status = {"status": "error", "error": str(e)}
 
 
-@router.post("/preview-shelves", summary="List the shelves found in a Goodreads CSV (admin)")
 def _read_csv_upload(file: UploadFile) -> bytes:
     """Bounded read of an uploaded CSV: refuse by declared size first, then
     never read more than the cap + 1 byte, so an oversize body is rejected
@@ -364,6 +363,7 @@ def _read_csv_upload(file: UploadFile) -> bytes:
     return raw
 
 
+@router.post("/preview-shelves", summary="List the shelves found in a Goodreads CSV (admin)")
 def preview_shelves(request: Request, file: UploadFile = File(...)):
     """Distinct bookshelf names (with book counts) so the user can pick which ones
     mean 'physically owned'. Returns the previously-saved selection too.
@@ -416,12 +416,14 @@ def import_goodreads(
 
 
 @router.get("/import/status", response_model=ImportStatus, summary="Check import status")
-def import_status():
+def import_status(request: Request):
+    _require_admin(request)  # import-wide job telemetry, not member data
     return ImportStatus(**_import_status)
 
 
 @router.get("/import/summary", summary="Summary of current import")
-def import_summary():
+def import_summary(request: Request):
+    _require_admin(request)  # import-wide job telemetry, not member data
     try:
         pg = _pg()
         cur = pg.cursor()

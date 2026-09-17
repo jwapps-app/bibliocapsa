@@ -173,7 +173,7 @@ def _run_inner(token: Optional[str], force: bool = False):
                 if not b["has_series"] and match.get("series"):
                     edits["series"] = match["series"]
             if edits:
-                overlay.set_edits(b["id"], edits)
+                overlay.set_edits(b["id"], edits, origin="enrich")   # a proposal: waits for review
                 _record(b["id"], "filled")
                 with _lock:
                     _job["filled"] += 1

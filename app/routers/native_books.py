@@ -352,8 +352,11 @@ def _enrich_one(cur, book: dict, token: Optional[str]) -> str:
 
 def _run_bulk_enrich(force: bool, token: Optional[str]):
     """Background worker: enrich all native books lacking metadata."""
-    conn = _pg()
+    conn = None
     try:
+        # Acquired INSIDE the try: a failed connection used to skip the finally
+        # below, leaving `running` set forever (every later start -> 409).
+        conn = _pg()
         cur = conn.cursor()
         if force:
             cur.execute("SELECT id, title, isbn, isbn13 FROM native_books ORDER BY id")
@@ -407,8 +410,16 @@ def _run_bulk_enrich(force: bool, token: Optional[str]):
                     _enrich_job["errors"] += 1
 
             time.sleep(delay)
+    except Exception as e:
+        logger.exception("Native enrichment aborted")
+        with _enrich_lock:
+            _enrich_job["error"] = str(e)
     finally:
-        conn.close()
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
         with _enrich_lock:
             _enrich_job["running"] = False
             _enrich_job["current"] = None
@@ -416,7 +427,8 @@ def _run_bulk_enrich(force: bool, token: Optional[str]):
 
 
 @router.get("/enrich/status", summary="Metadata enrichment job status")
-def enrich_status():
+def enrich_status(request: Request):
+    _require_admin(request)  # exposes the title being processed + library-wide counts
     with _enrich_lock:
         job = dict(_enrich_job)
     try:

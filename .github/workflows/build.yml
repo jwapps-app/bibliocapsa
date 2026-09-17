@@ -47,6 +47,15 @@ jobs:
         run: python -m compileall -q app
       - name: Import smoke test (every router + module resolves)
         run: python -c "import app.main"
+      # Behavioural regressions: route bindings, input validation, the auth gate,
+      # auto-sync provenance, upload handling. Hermetic -- a throwaway SQLite
+      # library and a fake Postgres; never a real library or database. The
+      # import check above cannot see a decorator on the wrong function
+      # (v1.22.0 shipped exactly that) -- these can.
+      - name: Regression tests
+        run: |
+          pip install pytest httpx
+          python -m pytest tests -q
 
   web-checks:
     runs-on: ubuntu-latest

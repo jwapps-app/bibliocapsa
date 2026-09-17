@@ -13,3 +13,4 @@ build.sh
 openapi.json
 .DS_Store
 ._*
+tests/

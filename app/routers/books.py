@@ -1,7 +1,7 @@
 """Books endpoints — full metadata including series."""
 
 from fastapi import APIRouter, Query, HTTPException, Request
-from typing import Optional
+from typing import Optional, Literal
 from ..database import get_conn
 from ..schemas import BookDetail, BookSummary, PaginatedBooks
 from ..queries import row_to_summary, row_to_detail, summaries_for_rows
@@ -10,6 +10,13 @@ from .. import calibre_overlay as overlay
 from .. import calibre_custom
 from datetime import datetime, timezone
 import math
+
+
+# The ONLY strings that may follow ORDER BY <expr>. `Query(enum=...)` is OpenAPI
+# documentation, not validation -- sort_dir used to reach the SQL verbatim, which
+# let any signed-in user append expressions to ORDER BY. The parameter is now a
+# validated Literal AND is only ever used as a key into this table.
+_SQL_DIR = {"asc": "ASC", "desc": "DESC"}
 
 
 def _cal_epoch(ts) -> float:
@@ -440,9 +447,9 @@ def list_books(
     series_id: Optional[int] = Query(None),
     tag_id: Optional[int] = Query(None),
     sort_by: str = Query("title", description="One of the built-ins, or 'custom:<label>' for a custom column"),
-    sort_dir: str = Query("asc", enum=["asc", "desc"]),
+    sort_dir: Literal["asc", "desc"] = Query("asc"),
     collapse_series: bool = Query(False),
-    format_filter: str = Query("digital", enum=["all", "digital", "physical"]),
+    format_filter: Literal["all", "digital", "physical"] = Query("digital"),
     custom_filter: Optional[str] = Query(None, description="Filter by a Calibre custom column: 'label:value'"),
     read_filter: Optional[str] = Query(None, description="Unified read status: 'read' | 'reading' | 'unread'"),
 ):
@@ -540,16 +547,16 @@ def list_books(
             "series":        "(SELECT s.name FROM series s JOIN books_series_link bsl ON bsl.series=s.id WHERE bsl.book=b.id LIMIT 1)",
         }
         if sort_by == "date_read":
-            order = f"({_calibre_read_date_expr(conn)}) {sort_dir.upper()} NULLS LAST"
+            order = f"({_calibre_read_date_expr(conn)}) {_SQL_DIR[sort_dir]} NULLS LAST"
         elif custom_sort:
             label = sort_by.split(":", 1)[1]
             col = conn.execute("SELECT id FROM custom_columns WHERE label = ?", (label,)).fetchone()
             if col:
-                order = f"(SELECT cc.value FROM custom_column_{int(col['id'])} cc WHERE cc.book=b.id) {sort_dir.upper()} NULLS LAST"
+                order = f"(SELECT cc.value FROM custom_column_{int(col['id'])} cc WHERE cc.book=b.id) {_SQL_DIR[sort_dir]} NULLS LAST"
             else:
-                order = f"b.sort {sort_dir.upper()} NULLS LAST"
+                order = f"b.sort {_SQL_DIR[sort_dir]} NULLS LAST"
         else:
-            order = f"{sort_map.get(sort_by, 'b.sort')} {sort_dir.upper()} NULLS LAST"
+            order = f"{sort_map.get(sort_by, 'b.sort')} {_SQL_DIR[sort_dir]} NULLS LAST"
 
         total = conn.execute(f"SELECT COUNT(*) FROM books b WHERE {where}", params).fetchone()[0]
 

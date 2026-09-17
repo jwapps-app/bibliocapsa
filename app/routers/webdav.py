@@ -7,6 +7,7 @@ subset KOReader uses: OPTIONS, PROPFIND, GET/HEAD, PUT, MKCOL, DELETE.
 
 import os
 import shutil
+import uuid
 from email.utils import formatdate
 from xml.sax.saxutils import escape
 
@@ -133,7 +134,9 @@ async def webdav(request: Request, path: str = ""):
         # Stream to a sibling temp file with a running cap, then swap it in
         # atomically: a concurrent reader (another device's GET, or the stats
         # page) sees either the old file or the new one, never a torn write.
-        tmp = full + ".uploading"
+        # Unique per request: two PUTs to the same path used to share one temp
+        # file, so one could keep writing into a file the other had published.
+        tmp = f"{full}.{uuid.uuid4().hex}.uploading"
         received = 0
         try:
             with open(tmp, "wb") as f:
