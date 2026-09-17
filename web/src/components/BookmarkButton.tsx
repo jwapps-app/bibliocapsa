@@ -28,7 +28,8 @@ export function BookmarkButton({ bookId, bookSource = "calibre", title, author }
         const r = await api.addWishlist({ title, author, book_id: bookId, book_source: bookSource });
         setOn(true); setWid(r.id);
       }
-    } finally { setBusy(false); }
+    } catch { /* write rejected: leave the button showing the real state */ }
+    finally { setBusy(false); }
   };
 
   return (

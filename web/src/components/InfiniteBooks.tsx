@@ -47,6 +47,8 @@ function Footer({ context }: { context?: Ctx }) {
   );
 }
 
+const bookKey = (b: BookSummary) => `${(b as any).book_source ?? "calibre"}:${b.id}`;
+
 export function InfiniteBooks({ initialItems, initialTotal, pageSize, fetchParams, cols = 3 }: Props) {
   const [items, setItems] = useState<BookSummary[]>(initialItems);
   const [page, setPage] = useState(1);
@@ -70,9 +72,13 @@ export function InfiniteBooks({ initialItems, initialTotal, pageSize, fetchParam
     stateRef.current = { loading, hasMore, page, count: items.length, fetchParams, pageSize };
   });
 
+  // Bumped whenever the query changes; a response from an older query is dropped.
+  const generation = useRef(0);
+
   const loadMore = useCallback(async () => {
     const s = stateRef.current;
     if (s.loading || !s.hasMore) return;
+    const gen = generation.current;
     setLoading(true);
     stateRef.current.loading = true;
     try {
@@ -83,18 +89,25 @@ export function InfiniteBooks({ initialItems, initialTotal, pageSize, fetchParam
           .map(([k, v]) => [k, String(v)])
       ).toString();
       const res = await fetch(`/api/books?${qs}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
+      // The filter changed while this was in flight: its books belong to the OLD
+      // view and must not be appended to (or advance the paging of) the new one.
+      if (gen !== generation.current) return;
       setItems(prev => {
-        const existing = new Set(prev.map(b => b.id));
-        const fresh = data.items.filter((b: BookSummary) => !existing.has(b.id));
+        // Calibre and native books have independent id spaces, so identity is
+        // (source, id). Keyed on id alone, native #7 vanished after Calibre #7.
+        const existing = new Set(prev.map(bookKey));
+        const fresh = data.items.filter((b: BookSummary) => !existing.has(bookKey(b)));
         return [...prev, ...fresh];
       });
       setPage(nextPage);
-      setHasMore(s.count + data.items.length < data.total);
+      // Paging follows what the SERVER has sent, not how many unique cards rendered.
+      setHasMore(nextPage * s.pageSize < data.total && data.items.length > 0);
     } catch (e) {
       console.error("Failed to load more books", e);
     } finally {
-      setLoading(false);
+      if (gen === generation.current) setLoading(false);
     }
   }, []);
 
@@ -102,6 +115,9 @@ export function InfiniteBooks({ initialItems, initialTotal, pageSize, fetchParam
 
   // Reset when the filter/search changes.
   useEffect(() => {
+    generation.current += 1;          // invalidate any request still in flight
+    stateRef.current.loading = false;
+    setLoading(false);
     setItems(initialItems);
     setPage(1);
     setHasMore(initialItems.length < initialTotal);
@@ -124,7 +140,7 @@ export function InfiniteBooks({ initialItems, initialTotal, pageSize, fetchParam
         // SSR / pre-mount fallback (also shown if no scroll parent is found) so
         // the library is never blank; Virtuoso takes over once mounted.
         <div className={`grid ${COLS_CLASS[cols] ?? "grid-cols-3"} gap-2.5 md:gap-7`}>
-          {items.map(book => <BookCard key={book.id} book={book} />)}
+          {items.map(book => <BookCard key={bookKey(book)} book={book} />)}
         </div>
       )}
     </div>

@@ -12,11 +12,16 @@ logger = logging.getLogger(__name__)
 _DATABASE_URL: str | None = None
 
 
+from urllib.parse import quote as _q
+
+
 def get_database_url() -> str:
     url = (
         os.getenv("DATABASE_URL")
-        or f"postgresql://{os.getenv('POSTGRES_USER', 'bibliocapsa')}:"
-           f"{os.getenv('POSTGRES_PASSWORD', 'bibliocapsa')}@"
+        # Percent-encode: a password containing @ ? # / % otherwise re-parses as a
+        # different host or path (p@ss?word -> host "ss").
+        or f"postgresql://{_q(os.getenv('POSTGRES_USER', 'bibliocapsa'), safe='')}:"
+           f"{_q(os.getenv('POSTGRES_PASSWORD', 'bibliocapsa'), safe='')}@"
            f"{os.getenv('POSTGRES_HOST', 'db')}:"
            f"{os.getenv('POSTGRES_PORT', '5432')}/"
            f"{os.getenv('POSTGRES_DB', 'bibliocapsa')}"
@@ -84,12 +89,41 @@ class _PooledConn:
             pass
 
 
+_overflow = _threading.BoundedSemaphore(int(os.getenv("PG_OVERFLOW_MAX", "10")))
+
+
+class _OverflowConn:
+    """A direct connection that returns its overflow slot when closed."""
+    __slots__ = ("_conn", "_closed")
+
+    def __init__(self, conn):
+        object.__setattr__(self, "_conn", conn)
+        object.__setattr__(self, "_closed", False)
+
+    def close(self):
+        if self._closed:
+            return
+        object.__setattr__(self, "_closed", True)
+        try:
+            self._conn.close()
+        finally:
+            _overflow.release()
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
 def get_pg():
     """Pooled PostgreSQL connection (RealDictCursor). Falls back to a plain
     direct connection if the pool is exhausted or unavailable, so bursts (e.g.
     a page of cover requests) degrade gracefully instead of erroring."""
-    global _pool, _pool_lock
-    import threading
+    global _pool
     import psycopg2
     from psycopg2.extras import RealDictCursor
 
@@ -115,8 +149,16 @@ def get_pg():
             conn = _pool.getconn()
         return _PooledConn(conn)
     except Exception:
-        # Pool exhausted or broken: plain connection whose close() really closes.
-        return psycopg2.connect(get_database_url(), cursor_factory=RealDictCursor)
+        # Pool exhausted or broken: a plain overflow connection whose close()
+        # really closes -- but from a FINITE budget. Unbounded, a burst opened
+        # new connections exactly when the database was already saturated.
+        if not _overflow.acquire(timeout=5):
+            raise RuntimeError("database busy: connection pool and overflow budget exhausted")
+        try:
+            return _OverflowConn(psycopg2.connect(get_database_url(), cursor_factory=RealDictCursor))
+        except Exception:
+            _overflow.release()
+            raise
 
 
 def init_postgres():

@@ -56,6 +56,23 @@ def _check_auth(request: Request, username: Optional[str], key: Optional[str]) -
     return ok
 
 
+def _canonical(username: Optional[str]) -> Optional[str]:
+    """The account's stored username. Login is case-insensitive, but progress was
+    stored under whatever casing the device typed -- so "Alice" and "alice"
+    became two progress namespaces and the dashboard (which reads the stored
+    name) missed one of them."""
+    if not username:
+        return username
+    conn = _pg()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT username FROM users WHERE LOWER(username) = LOWER(%s)", (username,))
+        row = cur.fetchone()
+        return row["username"] if row and row.get("username") else username
+    finally:
+        conn.close()
+
+
 def _check_key(username: str, key: str) -> bool:
     conn = _pg()
     try:
@@ -145,7 +162,7 @@ def put_progress(
                 device_id   = EXCLUDED.device_id,
                 updated_at  = EXCLUDED.updated_at
             """,
-            (x_auth_user, body.document, body.progress, body.percentage,
+            (_canonical(x_auth_user), body.document, body.progress, body.percentage,
              body.device, body.device_id, ts),
         )
         conn.commit()
@@ -173,7 +190,7 @@ def get_progress(
             FROM kosync_progress
             WHERE username = %s AND document = %s
             """,
-            (x_auth_user, document),
+            (_canonical(x_auth_user), document),
         )
         row = cur.fetchone()
     finally:

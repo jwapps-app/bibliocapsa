@@ -23,7 +23,10 @@ export default function WishlistPage() {
   const search = async () => {
     if (!title.trim()) return;
     setSearching(true); setResults(null);
+    // A failed lookup still leaves a usable page: an empty result shows the
+    // "add it anyway" option instead of a dead end.
     try { setResults(await api.lookupMetadata(title.trim(), author.trim() || undefined)); }
+    catch { setResults([]); }
     finally { setSearching(false); }
   };
 
@@ -35,7 +38,10 @@ export default function WishlistPage() {
 
   const addManual = () => title.trim() && add({ title: title.trim(), author: author.trim() || undefined });
 
-  const remove = async (id: number) => { await api.removeWishlist(id); setItems(items.filter(i => i.id !== id)); };
+  const remove = async (id: number) => {
+    try { await api.removeWishlist(id); setItems(items.filter(i => i.id !== id)); }
+    catch { load(); }   // not removed: keep it on screen
+  };
 
   return (
     <div className="min-h-screen flex flex-col items-center px-6 py-10">
@@ -80,10 +86,10 @@ export default function WishlistPage() {
                     <div className="min-w-0 flex-1">
                       <div className="truncate" style={{ fontFamily: "var(--serif)", fontSize: "0.92rem", color: "var(--parchment)" }}>{c.title}</div>
                       <div className="truncate" style={{ fontFamily: "var(--body)", fontSize: "0.76rem", color: "var(--parchment-dim)", opacity: 0.7 }}>
-                        {authorStr(c.author)} · {c.source}
+                        {authorStr(c.authors ?? c.author)} · {c.source}
                       </div>
                     </div>
-                    <button onClick={() => add({ title: c.title, author: authorStr(c.author) || undefined, isbn: c.isbn || undefined, cover_url: cover || undefined })}
+                    <button onClick={() => add({ title: c.title, author: authorStr(c.authors ?? c.author) || undefined, isbn: c.isbn || undefined, cover_url: cover || undefined })}
                       className="shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded-sm hover:opacity-80"
                       style={{ background: "var(--gold-dim)", color: "var(--gold-light)", fontFamily: "var(--mono)", fontSize: "0.7rem" }}>
                       <Plus className="w-3 h-3" /> Add

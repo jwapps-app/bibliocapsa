@@ -31,6 +31,14 @@ def _make_library():
         CREATE TABLE comments (id INTEGER PRIMARY KEY, book INT, text TEXT);
         CREATE TABLE data (id INTEGER PRIMARY KEY, book INT, format TEXT, name TEXT, uncompressed_size INT);
         CREATE TABLE books_tags_link (id INTEGER PRIMARY KEY, book INT, tag INT);
+        CREATE TABLE books_authors_link (id INTEGER PRIMARY KEY, book INT, author INT);
+        CREATE TABLE books_series_link (id INTEGER PRIMARY KEY, book INT, series INT);
+        CREATE TABLE ratings (id INTEGER PRIMARY KEY, rating INT);
+        CREATE TABLE books_ratings_link (id INTEGER PRIMARY KEY, book INT, rating INT);
+        CREATE TABLE publishers (id INTEGER PRIMARY KEY, name TEXT);
+        CREATE TABLE books_publishers_link (id INTEGER PRIMARY KEY, book INT, publisher INT);
+        CREATE TABLE identifiers (id INTEGER PRIMARY KEY, book INT, type TEXT, val TEXT);
+        CREATE TABLE custom_columns (id INTEGER PRIMARY KEY, label TEXT, name TEXT, datatype TEXT, is_multiple INT, normalized INT);
     """)
     c.execute("INSERT INTO books (id, title, sort, path) VALUES (1, '三体', '三体', ?)", (BOOK_DIR,))
     c.execute("INSERT INTO data (book, format, name) VALUES (1, 'EPUB', ?)", (BOOK_FILE,))

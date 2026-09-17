@@ -1,6 +1,6 @@
-fastapi==0.115.5
-uvicorn[standard]==0.32.0
-pydantic==2.9.2
-python-multipart==0.0.31
+fastapi==0.141.1
+uvicorn[standard]==0.53.0
+pydantic==2.13.5
+python-multipart==0.0.32
 psycopg2-binary==2.9.10
 Pillow==12.3.0

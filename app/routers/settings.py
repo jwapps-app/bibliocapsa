@@ -72,6 +72,24 @@ def get_setting(key: str) -> Optional[str]:
         return hit[0] if hit is not None else None
 
 
+def settings_readable(key: str) -> bool:
+    """True if `key` can be answered from a fresh cache entry or the database
+    right now. Lets a WRITE path refuse to act on a guess (see calibre_sync)."""
+    import time
+    hit = _settings_cache.get(key)
+    if hit is not None and (time.monotonic() - hit[1]) < _SETTINGS_TTL:
+        return True
+    try:
+        conn = _pg()
+        try:
+            conn.cursor().execute("SELECT 1")
+        finally:
+            conn.close()
+        return True
+    except Exception:
+        return False
+
+
 def set_setting(key: str, value: Optional[str]) -> None:
     import time
     conn = _pg()

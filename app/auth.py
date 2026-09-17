@@ -125,18 +125,23 @@ _BASIC_FAIL_MAX_GLOBAL = 300  # across all sources
 
 
 def _fail_count(key: str, now: float) -> int:
-    b = [t for t in _basic_fail.get(key, []) if now - t < _BASIC_FAIL_WINDOW]
-    _basic_fail[key] = b
-    return len(b)
+    # Read-only on purpose: checks must not allocate per-key state.
+    return sum(1 for t in _basic_fail.get(key, ()) if now - t < _BASIC_FAIL_WINDOW)
 
 
 def _basic_throttled(key: str, ip: str = "", scope: str = "basic") -> bool:
+    """Per (user, ip) and per ip. The GLOBAL count is deliberately not a lockout:
+    as one, ~1 bad attempt per second from anywhere refused every real user.
+    It is consulted by under_attack() instead, which only removes the expensive
+    decoy hash for UNKNOWN usernames."""
     now = time.time()
     if _fail_count(f"{scope}|{key}", now) >= _BASIC_FAIL_MAX:
         return True
-    if ip and _fail_count(f"{scope}|ip|{ip}", now) >= _BASIC_FAIL_MAX_IP:
-        return True
-    return _fail_count(f"{scope}|global", now) >= _BASIC_FAIL_MAX_GLOBAL
+    return bool(ip) and _fail_count(f"{scope}|ip|{ip}", now) >= _BASIC_FAIL_MAX_IP
+
+
+def under_attack(scope: str = "basic") -> bool:
+    return _fail_count(f"{scope}|global", time.time()) >= _BASIC_FAIL_MAX_GLOBAL
 
 
 def _note_basic_failure(key: str, ip: str = "", scope: str = "basic") -> None:
@@ -272,8 +277,22 @@ def _user_by_credentials(username: str, password: str) -> Optional[dict]:
             row.pop("password_hash", None)
             return row
         return None
-    verify_password(password, _DECOY_HASH)  # equalize timing (no user-enumeration oracle)
+    # Equalize timing so "no such user" can't be told from "wrong password" --
+    # unless a spray is in progress: then skipping the ~100 ms decoy is what
+    # keeps forged-address floods from burning CPU. Real accounts are unaffected
+    # either way (their cost is bounded by the per-account limit).
+    if not under_attack():
+        verify_password(password, _DECOY_HASH)
     return None
+
+
+def session_token(request) -> Optional[str]:
+    """The session token this request authenticated with: cookie, else Bearer."""
+    tok = request.cookies.get(SESSION_COOKIE)
+    if tok:
+        return tok
+    authz = request.headers.get("authorization", "")
+    return authz[7:].strip() if authz.lower().startswith("bearer ") else None
 
 
 def authenticate_request(request) -> Optional[dict]:

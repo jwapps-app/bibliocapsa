@@ -7,7 +7,7 @@
 //
 // Bump CACHE when the caching logic changes; the activate handler purges any
 // cache whose name doesn't match, so old shells don't linger.
-const CACHE = "bibliocapsa-shell-v2";
+const CACHE = "bibliocapsa-shell-v3";   // v3: purges v2, which held authenticated HTML
 
 // Paths owned by the backend — auth state, live data, large downloads. Never
 // touched by the SW: no caching, no interception.
@@ -25,13 +25,17 @@ h1{font-size:1.25rem;margin:0 0 .5rem;color:#c9933a}p{opacity:.8;line-height:1.5
 <p>Bibliocapsa can't reach the server right now. Reconnect and try again.</p></div></body></html>`;
 
 self.addEventListener("install", (event) => {
-  // Precache the start URL so the shell is available offline; skip waiting so a
-  // new SW takes over on the next load rather than after every tab closes.
-  event.waitUntil(
-    caches.open(CACHE)
-      .then((cache) => cache.add(new Request("/", { cache: "reload" })).catch(() => {}))
-      .then(() => self.skipWaiting())
-  );
+  // Nothing is precached. "/" is the signed-in library page -- precaching it (and
+  // re-caching it on every visit) stored one user's HTML, which was then served
+  // as the offline fallback for ANY navigation, including /login after logout.
+  event.waitUntil(self.skipWaiting());
+});
+
+// The page asks for this on logout / account switch.
+self.addEventListener("message", (event) => {
+  if (event.data === "purge") {
+    event.waitUntil(caches.keys().then((keys) => Promise.all(keys.map((k) => caches.delete(k)))));
+  }
 });
 
 self.addEventListener("activate", (event) => {
@@ -55,25 +59,12 @@ self.addEventListener("fetch", (event) => {
   // Page navigations: network-first (always prefer fresh, auth-aware HTML), then
   // fall back to the cached shell, then the offline page.
   if (request.mode === "navigate") {
+    // Network only; on failure show the STATIC offline page. Navigations are
+    // never written to or read from the cache -- they are per-user HTML.
     event.respondWith(
-      fetch(request)
-        .then((res) => {
-          // Only the home page is the offline shell. (Caching every navigation
-          // as "/" persisted whatever page — including authenticated, user-
-          // specific HTML — was visited last, and wrote to disk per click.)
-          if (url.pathname === "/" && res.ok) {
-            const copy = res.clone();
-            caches.open(CACHE).then((c) => c.put("/", copy)).catch(() => {});
-          }
-          return res;
-        })
-        .catch(() =>
-          caches.match(request).then(
-            (r) => r || caches.match("/").then((shell) =>
-              shell || new Response(OFFLINE_HTML, { headers: { "Content-Type": "text/html; charset=utf-8" } })
-            )
-          )
-        )
+      fetch(request).catch(() =>
+        new Response(OFFLINE_HTML, { headers: { "Content-Type": "text/html; charset=utf-8" } })
+      )
     );
     return;
   }

@@ -31,7 +31,7 @@ export default function SyncPage() {
 
   const load = useCallback(() => {
     setLoading(true);
-    api.calibrePending().then(d => { setItems(d.items); setUploads(d.uploads || []); setCount(d.count); }).catch(() => {}).finally(() => setLoading(false));
+    api.calibrePending().then(d => { setItems(d.items); setUploads(d.uploads || []); setCount(d.count); }).catch(() => setResult("Could not load pending changes — this is NOT the same as nothing pending. Reload to retry.")).finally(() => setLoading(false));
   }, []);
   useEffect(() => { load(); }, [load]);
 
@@ -41,7 +41,11 @@ export default function SyncPage() {
     catch (e: any) { setResult(e.message ?? "Upload failed"); }
     finally { setUploadingBusy(false); }
   };
-  const discardUpload = async (id: number) => { await api.discardUpload(id); load(); };
+  const discardUpload = async (id: number) => {
+    try { await api.discardUpload(id); }
+    catch (e) { setResult(e instanceof Error ? e.message : "Could not discard that upload"); }
+    load();
+  };
 
   const doSync = async () => {
     setSyncing(true); setResult(null);

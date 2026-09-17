@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef } from "react";
+import { localToday } from "@/lib/format";
 import { useRouter } from "next/navigation";
 import type { NativeBook, NativeBookUpdate } from "@/lib/api";
 import { api } from "@/lib/api";
@@ -133,7 +134,7 @@ export function NativeBookDetail({ book: initial }: { book: NativeBook }) {
                       <button key={label}
                         onClick={() => patch({
                           reading_status: val || null,
-                          ...(val === "read" && !book.date_read ? { date_read: new Date().toISOString().slice(0, 10) } : {}),
+                          ...(val === "read" && !book.date_read ? { date_read: localToday() } : {}),
                         })}
                         className="px-3 py-1.5 rounded-sm border transition-colors"
                         style={{ fontFamily: "var(--mono)", fontSize: "0.72rem",

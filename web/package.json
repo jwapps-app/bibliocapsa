@@ -1,6 +1,6 @@
 {
   "name": "bibliocapsa-web",
-  "version": "1.22.6",
+  "version": "1.22.7",
   "private": true,
   "license": "AGPL-3.0-only",
   "scripts": {

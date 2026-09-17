@@ -16,7 +16,8 @@ SQLite, so instead of per-row updates we rebuild wholesale, but ONLY when a chea
 fingerprint of Calibre's text changes (count + total size + latest timestamp).
 Unchanged restarts skip instantly. The rebuild runs in one background thread in
 small batches with brief yields, so it never pegs the CPU or blocks requests.
-While (re)building, callers fall back to the simpler LIKE search.
+While (re)building, the search endpoint answers 503 + Retry-After (a LIKE scan of
+the multi-GB text table was far too slow to be a usable fallback).
 """
 
 import os
@@ -261,24 +262,6 @@ def start_background(interval: int = 1800) -> None:
     threading.Thread(target=loop, daemon=True).start()
 
 
-def _excerpt(text: str, query: str, context: int = 200) -> str:
-    lower = text.lower()
-    pos, mlen = -1, len(query)
-    for cand in [query, *query.split()]:
-        c = cand.lower().strip()
-        if not c:
-            continue
-        p = lower.find(c)
-        if p != -1:
-            pos, mlen = p, len(cand)
-            break
-    if pos == -1:
-        return text[:context].strip() + "…"
-    start = max(0, pos - context // 2)
-    end = min(len(text), pos + mlen + context // 2)
-    s = text[start:end].strip()
-    return ("…" if start > 0 else "") + s + ("…" if end < len(text) else "")
-
 
 def _build_match(q: str):
     """Build a safe FTS5 MATCH from a user query.
@@ -330,28 +313,37 @@ def search(q: str, allowed_ids, limit: int, offset: int):
 
         # Rank-ordered window of matching rows (bm25 is negative; smaller = better).
         # Kept as a plain MATCH query (no JOIN/aggregate) so bm25() is usable.
-        fetch_n = min(500, (offset + limit) * 3 + limit)
-        ranked = conn.execute(
-            f"SELECT rowid AS rid FROM docs WHERE {where} ORDER BY bm25(docs) LIMIT ?",
-            params + [fetch_n],
-        ).fetchall()
-
-        # Map rowids → book/format, dedupe to one entry per book (best rank first).
-        rids = [r["rid"] for r in ranked]
-        meta = {}
-        if rids:
-            qmarks = ",".join("?" * len(rids))
-            for m in conn.execute(
-                f"SELECT rowid_ref, book, format FROM doc_meta WHERE rowid_ref IN ({qmarks})", rids
-            ):
-                meta[m["rowid_ref"]] = (m["book"], m["format"])
-        seen, deduped = set(), []
-        for r in ranked:
-            bf = meta.get(r["rid"])
-            if not bf or bf[0] in seen:
-                continue
-            seen.add(bf[0])
-            deduped.append(bf)
+        # Grow the ranked window until it holds enough DISTINCT books for this
+        # page. It used to be capped at 500 rows before slicing, so any offset
+        # past that returned nothing while `total` said otherwise -- sooner still
+        # when a book matched in several formats.
+        need = offset + limit
+        fetch_n = need * 3 + limit
+        while True:
+            ranked = conn.execute(
+                f"SELECT rowid AS rid FROM docs WHERE {where} ORDER BY bm25(docs) LIMIT ?",
+                params + [fetch_n],
+            ).fetchall()
+            # Map rowids → book/format, dedupe to one entry per book (best rank first).
+            rids = [r["rid"] for r in ranked]
+            meta = {}
+            for i in range(0, len(rids), 500):
+                chunk = rids[i:i + 500]
+                qmarks = ",".join("?" * len(chunk))
+                for m in conn.execute(
+                    f"SELECT rowid_ref, book, format FROM doc_meta WHERE rowid_ref IN ({qmarks})", chunk
+                ):
+                    meta[m["rowid_ref"]] = (m["book"], m["format"])
+            seen, deduped = set(), []
+            for r in ranked:
+                bf = meta.get(r["rid"])
+                if not bf or bf[0] in seen:
+                    continue
+                seen.add(bf[0])
+                deduped.append(bf)
+            if len(deduped) >= need or len(ranked) < fetch_n or fetch_n >= 50_000:
+                break
+            fetch_n *= 2
         page = deduped[offset:offset + limit]
 
         # Total distinct books across ALL matches (no bm25 here, so a JOIN is fine).

@@ -308,7 +308,14 @@ def _enrich_one(cur, book: dict, token: Optional[str]) -> str:
     md = metadata.fetch_metadata(book.get("isbn"), book.get("isbn13"), token)
 
     cover_url = None
-    if md and md.cover_url:
+    # The UPDATE below keeps an existing cover_url (COALESCE), but the BYTES were
+    # written to the cache first and unconditionally -- so a manually uploaded
+    # cover was overwritten on disk while its `manual:` marker said it was kept.
+    # Re-read the row: only fetch a cover when the book has none right now.
+    cur.execute("SELECT cover_url FROM native_books WHERE id=%s", (book["id"],))
+    _row = cur.fetchone()
+    has_cover = bool(_row and _row.get("cover_url"))
+    if md and md.cover_url and not has_cover:
         downloaded = metadata.download_cover(md.cover_url)
         if downloaded:
             blob, content_type = downloaded

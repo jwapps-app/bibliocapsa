@@ -14,13 +14,16 @@ def check(key: str, limit: int, window: int = 60) -> None:
     """Allow `limit` hits per `window` seconds for `key`; else raise 429."""
     now = time.time()
     bucket = [t for t in _BUCKETS.get(key, []) if now - t < window]
+    if len(bucket) >= limit:
+        # Rejected: record nothing. Appending here let a client that was already
+        # limited keep growing its own bucket (and the work to filter it).
+        _BUCKETS[key] = bucket
+        raise HTTPException(status_code=429, detail="Too many requests — please slow down.")
     bucket.append(now)
     _BUCKETS[key] = bucket
     if len(_BUCKETS) > 5000:  # crude cap so the dict can't grow unbounded
         for k in [k for k, v in _BUCKETS.items() if not v or now - v[-1] > window]:
             _BUCKETS.pop(k, None)
-    if len(bucket) > limit:
-        raise HTTPException(status_code=429, detail="Too many requests — please slow down.")
 
 
 def client_key(request: Request, name: str) -> str:

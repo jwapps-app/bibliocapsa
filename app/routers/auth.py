@@ -55,10 +55,10 @@ _LOGIN_WINDOW = 300
 
 
 def _login_failures(key: str) -> int:
+    # Read-only: a CHECK must not allocate state, or rejected requests with
+    # unique keys grow the table while being "limited".
     now = time.time()
-    bucket = [t for t in _LOGIN_BUCKETS.get(key, []) if now - t < _LOGIN_WINDOW]
-    _LOGIN_BUCKETS[key] = bucket
-    return len(bucket)
+    return sum(1 for t in _LOGIN_BUCKETS.get(key, ()) if now - t < _LOGIN_WINDOW)
 
 
 def _note_login_failure(*keys: str) -> None:
@@ -77,8 +77,7 @@ def _login_throttled(uname: str, ip: str) -> bool:
     household behind one address can't lock itself out by logging in. The
     global ceiling is the backstop against a client that forges its IP."""
     return (_login_failures(f"u:{uname}") >= 10
-            or _login_failures(f"ip:{ip}") >= 40
-            or _login_failures("global") >= 300)
+            or _login_failures(f"ip:{ip}") >= 40)
 
 
 from ..pg_database import get_pg as _pg
@@ -99,10 +98,19 @@ def _is_local_client(request: Request) -> bool:
     import ipaddress
     if auth.via_cloudflare(request):
         return False
-    try:
-        xff = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-        a = ipaddress.ip_address(xff or (request.client.host if request.client else ""))
+    def _local(ip: str) -> bool:
+        a = ipaddress.ip_address(ip)
         return a.is_private or a.is_loopback or a.is_link_local
+    try:
+        # The socket peer cannot be forged. If IT is public, the backend is
+        # exposed directly and any X-Forwarded-For is the client's own claim.
+        peer = request.client.host if request.client else ""
+        if not _local(peer):
+            return False
+        # A private peer is the proxy; then the forwarded address (set by the
+        # shipped Caddy from ITS socket) must be local too.
+        xff = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        return _local(xff) if xff else True
     except ValueError:
         return False
 
@@ -392,7 +400,7 @@ def update_me(body: MeUpdate, request: Request):
         finally:
             conn.close()
         auth.invalidate_user_sessions(user["id"])
-    fresh = auth._user_from_session(request.cookies.get(auth.SESSION_COOKIE) or "") or user
+    fresh = auth._user_from_session(auth.session_token(request) or "") or user
     return _public_user(fresh)
 
 
@@ -445,7 +453,7 @@ def change_password(body: PasswordBody, request: Request):
         )
         # Invalidate every OTHER session for this user — a leaked/old session
         # token stops working once the password changes (the current one stays).
-        current_token = request.cookies.get(auth.SESSION_COOKIE)
+        current_token = auth.session_token(request)   # cookie OR bearer (the iOS app)
         cur.execute(
             "DELETE FROM sessions WHERE user_id = %s AND token IS DISTINCT FROM %s",
             (user["id"], current_token),

@@ -47,8 +47,8 @@ export function Sidebar({ currentParams, bookCount }: SidebarProps) {
 
   const deleteView = async (id: number) => {
     if (!confirm("Delete this saved view?")) return;
-    await api.deleteView(id);
-    setSavedViews(prev => prev.filter(v => v.id !== id));
+    try { await api.deleteView(id); setSavedViews(prev => prev.filter(v => v.id !== id)); }
+    catch (e) { alert(e instanceof Error ? e.message : "Could not delete that view"); }
   };
 
   const logout = async () => {
@@ -94,7 +94,11 @@ export function Sidebar({ currentParams, bookCount }: SidebarProps) {
   const smartShelves = shelves.filter(s => s.is_smart);
   const manualShelves = shelves.filter(s => !s.is_smart);
 
-  const SidebarContent = ({ onNavigate }: { onNavigate?: () => void }) => (
+  // Rendered by CALLING it ({renderContent(...)}), not as <SidebarContent/>. Declared
+  // inside the parent, a component gets a new identity on every parent render, so
+  // React remounted the whole subtree per keystroke in the shelf-name input --
+  // dropping focus/selection and re-running child effects.
+  const renderContent = ({ onNavigate }: { onNavigate?: () => void } = {}) => (
     <>
       {/* Main nav */}
       <nav className="flex flex-col gap-0.5 px-2 pt-3 pb-2">
@@ -345,7 +349,7 @@ export function Sidebar({ currentParams, bookCount }: SidebarProps) {
           </button>
         </div>
         <div className="flex-1 overflow-y-auto flex flex-col">
-          <SidebarContent onNavigate={() => setMobileOpen(false)} />
+          {renderContent({ onNavigate: () => setMobileOpen(false) })}
         </div>
       </div>
 
@@ -376,7 +380,7 @@ export function Sidebar({ currentParams, bookCount }: SidebarProps) {
             {collapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
           </button>
         </div>
-        <SidebarContent />
+        {renderContent()}
       </aside>
     </>
   );

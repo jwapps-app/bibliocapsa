@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { api, publicUrl } from "@/lib/api";
 import { ArrowLeft, Loader2, Clock, BookOpen, CalendarDays, Layers, Target, Sparkles } from "lucide-react";
-import { fmtH } from "@/lib/format";
+import { fmtH, localToday } from "@/lib/format";
 
 
 const PERIODS = [[0, "All time"], [365, "Year"], [90, "90 days"], [30, "30 days"]] as const;
@@ -276,7 +276,7 @@ function Heatmap({ activity }: { activity: { date: string; seconds: number }[] }
   const cells: { date: string; secs: number }[] = [];
   for (let i = 0; i < (WEEKS + 1) * 7; i++) {
     const d = new Date(start); d.setDate(start.getDate() + i);
-    const key = d.toISOString().slice(0, 10);
+    const key = localToday(d);   // the cell's LOCAL date; toISOString() shifted it a day for evening viewers
     cells.push({ date: key, secs: map[key] || 0 });
   }
   const level = (s: number) => s === 0 ? 0 : s < 600 ? 1 : s < 1800 ? 2 : s < 3600 ? 3 : 4;

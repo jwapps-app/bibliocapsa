@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { api } from "@/lib/api";
+import { localToday } from "@/lib/format";
 import { Plus, X } from "lucide-react";
 
 type Entry = { id: number; date_read: string | null; source: string | null; ts: number };
@@ -24,16 +25,18 @@ export function ReadHistory({ source, bookId, refreshKey = 0 }:
   const addToday = async () => {
     if (busy) return;
     setBusy(true);
-    try { await api.addReadDate(source, bookId, new Date().toISOString().slice(0, 10)); load(); }
+    try { await api.addReadDate(source, bookId, localToday()); load(); }
     finally { setBusy(false); }
   };
   const edit = async (id: number, date: string) => {
     setEntries(es => es.map(e => e.id === id ? { ...e, date_read: date } : e));  // optimistic
-    await api.editReadDate(id, date || null);
+    try { await api.editReadDate(id, date || null); }
+    catch { load(); }   // the server said no: show what is actually stored
   };
   const remove = async (id: number) => {
     setEntries(es => es.filter(e => e.id !== id));  // optimistic
-    await api.deleteReadDate(id);
+    try { await api.deleteReadDate(id); }
+    catch { load(); }   // not deleted: put the row back
   };
 
   if (!loaded) return null;

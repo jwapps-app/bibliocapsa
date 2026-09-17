@@ -84,6 +84,18 @@ export interface Loan {
 // Shared cache for api.me() — see its comment.
 let _me: { p: Promise<CurrentUser | null>; ts: number } | null = null;
 
+/** fetch() that REJECTS on a non-2xx, with the server's message when it has one.
+ *  Several mutation helpers awaited fetch and ignored the status, so a 403 or
+ *  500 looked like success and the UI removed the row / showed "saved". */
+async function must(input: string, init?: RequestInit): Promise<Response> {
+  const res = await fetch(input, init);
+  if (!res.ok) {
+    const detail = await res.json().then(d => d?.detail).catch(() => null);
+    throw new Error(typeof detail === "string" ? detail : `Request failed (${res.status})`);
+  }
+  return res;
+}
+
 async function get<T>(path: string): Promise<T> {
   const headers: Record<string, string> = {};
   // On the server (SSR), forward the caller's session cookie to the backend so
@@ -184,12 +196,12 @@ export const api = {
     return res.json();
   },
   editReadDate: async (entryId: number, date_read: string | null) => {
-    await fetch(`/api/reading/history/entry/${entryId}`, {
+    await must(`/api/reading/history/entry/${entryId}`, {
       method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ date_read }),
     });
   },
   deleteReadDate: async (entryId: number) => {
-    await fetch(`/api/reading/history/entry/${entryId}`, { method: "DELETE" });
+    await must(`/api/reading/history/entry/${entryId}`, { method: "DELETE" });
   },
   statsSummary: (days = 0) => get<any>(`/api/stats/summary${days ? `?days=${days}` : ""}`),
   bookStats: (id: number) => get<any>(`/api/stats/book/${id}`),
@@ -201,7 +213,7 @@ export const api = {
     if (!res.ok) throw new Error(await res.text());
     return res.json();
   },
-  removeWishlist: async (id: number): Promise<void> => { await fetch(`/api/wishlist/${id}`, { method: "DELETE" }); },
+  removeWishlist: async (id: number): Promise<void> => { await must(`/api/wishlist/${id}`, { method: "DELETE" }); },
   // Saved views: a named bundle of filters + sort + layout, shared with the iOS
   // app. `config` is keyed by NAME (not Calibre ids) so both clients resolve it.
   savedViews: () => get<SavedView[]>("/api/views"),
@@ -213,7 +225,7 @@ export const api = {
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail ?? "Could not save view");
     return res.json();
   },
-  deleteView: async (id: number): Promise<void> => { await fetch(`/api/views/${id}`, { method: "DELETE" }); },
+  deleteView: async (id: number): Promise<void> => { await must(`/api/views/${id}`, { method: "DELETE" }); },
   wishlistContains: (bookId: number, bookSource = "calibre") => get<{ bookmarked: boolean; id: number | null }>(`/api/wishlist/contains?book_id=${bookId}&book_source=${bookSource}`),
   setGoal: async (year: number, target: number): Promise<{ year: number; target: number | null; count: number }> => {
     const res = await fetch("/api/stats/goal", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ year, target }) });
@@ -231,7 +243,8 @@ export const api = {
   customColumns: () => get<{ label: string; name: string; datatype: string; is_multiple: boolean }[]>("/api/calibre/custom-columns"),
   calibrePending: async (): Promise<{ count: number; books: number; items: any[]; uploads: any[] }> => {
     const res = await fetch("/api/calibre/pending");
-    return res.ok ? res.json() : { count: 0, books: 0, items: [], uploads: [] };
+    if (!res.ok) throw new Error(`Could not load pending changes (${res.status})`);
+    return res.json();
   },
   uploadCalibreBook: async (file: File): Promise<any> => {
     const fd = new FormData(); fd.append("file", file);
@@ -240,7 +253,7 @@ export const api = {
     return res.json();
   },
   discardUpload: async (id: number): Promise<void> => {
-    await fetch(`/api/calibre/uploads/${id}`, { method: "DELETE" }).catch(() => {});
+    await must(`/api/calibre/uploads/${id}`, { method: "DELETE" });
   },
   calibrePendingCount: async (): Promise<number> => {
     const res = await fetch("/api/calibre/pending/count");
@@ -347,7 +360,13 @@ export const api = {
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail ?? "Registration failed");
     return res.json();
   },
-  logout: async (): Promise<void> => { _me = null; await fetch("/api/auth/logout", { method: "POST" }); },
+  logout: async (): Promise<void> => {
+    _me = null;
+    await fetch("/api/auth/logout", { method: "POST" });
+    // Drop anything the service worker cached for this account.
+    try { navigator.serviceWorker?.controller?.postMessage("purge"); } catch {}
+    try { (await caches.keys()).forEach(k => caches.delete(k)); } catch {}
+  },
   updateMe: async (body: { kindle_email?: string }): Promise<CurrentUser> => {
     const res = await fetch("/api/auth/me", {
       method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),

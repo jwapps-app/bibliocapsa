@@ -490,6 +490,21 @@ def list_books(
             like = f"%{search}%"
             params += [like, like]
 
+        if format_filter == "physical":
+            # The Physical view normally runs through _merged_all, but an author /
+            # series / tag / custom filter or custom sort lands here -- and this
+            # branch had no ownership predicate, so "physical books by this author"
+            # returned digital-only books. (Ids are integer PKs from our own DB.)
+            from ..pg_database import get_pg as _getpg
+            _pgx = _getpg()
+            try:
+                _c = _pgx.cursor()
+                _c.execute("SELECT book_id FROM book_ownership WHERE has_physical=TRUE AND book_source='calibre'")
+                _phys = [int(r["book_id"]) for r in _c.fetchall()]
+            finally:
+                _pgx.close()
+            conditions.append("b.id IN (" + ",".join(map(str, _phys)) + ")" if _phys else "1=0")
+
         if author_id is not None:
             conditions.append("EXISTS (SELECT 1 FROM books_authors_link WHERE book=b.id AND author=?)")
             params.append(author_id)
@@ -550,8 +565,17 @@ def list_books(
             order = f"({_calibre_read_date_expr(conn)}) {_SQL_DIR[sort_dir]} NULLS LAST"
         elif custom_sort:
             label = sort_by.split(":", 1)[1]
-            col = conn.execute("SELECT id FROM custom_columns WHERE label = ?", (label,)).fetchone()
-            if col:
+            col = conn.execute("SELECT id, normalized FROM custom_columns WHERE label = ?", (label,)).fetchone()
+            if col and col["normalized"]:
+                # Normalized columns (text/enumeration/series-like) keep values in
+                # custom_column_N and link books through books_custom_column_N_link;
+                # there is no `book` column to correlate on, so the simple form
+                # below was a SQL error (HTTP 500) for them.
+                cid = int(col["id"])
+                order = (f"(SELECT MIN(v.value) FROM books_custom_column_{cid}_link l "
+                         f"JOIN custom_column_{cid} v ON v.id = l.value WHERE l.book = b.id) "
+                         f"{_SQL_DIR[sort_dir]} NULLS LAST")
+            elif col:
                 order = f"(SELECT cc.value FROM custom_column_{int(col['id'])} cc WHERE cc.book=b.id) {_SQL_DIR[sort_dir]} NULLS LAST"
             else:
                 order = f"b.sort {_SQL_DIR[sort_dir]} NULLS LAST"

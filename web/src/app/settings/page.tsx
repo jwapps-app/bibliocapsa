@@ -201,7 +201,7 @@ export default function SettingsPage() {
   };
 
   const resetPassword = async (id: number, text: string, username: string) => {
-    if (text.length < 6) { setMemberMsg("Password must be at least 6 characters"); return; }
+    if (text.length < 12) { setMemberMsg("Password must be at least 12 characters"); return; }
     try {
       await api.adminResetPassword(id, text);
       setPwReset(null);
@@ -750,7 +750,7 @@ export default function SettingsPage() {
                     {pwReset?.id === a.id ? (
                       <div className="flex gap-1.5">
                         <input className="bc-input flex-1" type="text" autoFocus
-                          placeholder="New password (min 6 chars)"
+                          placeholder="New password (min 12 chars)"
                           value={pwReset.text}
                           onChange={e => setPwReset({ id: a.id, text: e.target.value })}
                           onKeyDown={e => { if (e.key === "Enter") resetPassword(a.id, pwReset.text, a.username); if (e.key === "Escape") setPwReset(null); }} />
@@ -891,7 +891,7 @@ export default function SettingsPage() {
                    onChange={e => setPw({ ...pw, next: e.target.value })} autoComplete="new-password" />
           </div>
           <div className="flex items-center gap-3 mt-3">
-            <button onClick={savePassword} disabled={pwBusy || pw.next.length < 6}
+            <button onClick={savePassword} disabled={pwBusy || pw.next.length < 12}
               className="flex items-center gap-1.5 px-4 py-2 rounded-sm transition-opacity hover:opacity-85 disabled:opacity-40"
               style={{ background: "var(--gold-dim)", color: "var(--gold-light)", fontFamily: "var(--mono)", fontSize: "0.78rem" }}>
               {pwBusy ? <Loader className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}

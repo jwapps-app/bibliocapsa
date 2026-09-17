@@ -87,6 +87,21 @@ def sync(
         truncated = bool(limit) and len(rows) > limit
         if truncated:
             rows = rows[:limit]
+            # The cursor compares at whole-SECOND precision (SQLite datetime()),
+            # so a page must never end in the middle of a second: the rest of
+            # that second would be skipped by the next `since`. Pull in every
+            # remaining book modified in the same second as the last one.
+            have = {r["id"] for r in rows}
+            tail = conn.execute(
+                f"""
+                SELECT b.id, b.title, b.sort, b.pubdate, b.last_modified, b.timestamp,
+                       b.has_cover, b.uuid, b.path, b.series_index, b.author_sort
+                FROM books b {where}{" AND " if where else " WHERE "}datetime(b.last_modified) = datetime(?)
+                ORDER BY b.last_modified ASC
+                """,
+                params + [rows[-1]["last_modified"]],
+            ).fetchall()
+            rows += [r for r in tail if r["id"] not in have]
 
         # One ownership query for the whole batch. If Postgres is down this is
         # a hard error: the per-book builder used to substitute defaults and
@@ -106,8 +121,11 @@ def sync(
     # With a page limit, `until` must not skip books: point it at the last
     # returned book's own timestamp so the next `since` resumes exactly there.
     until = now
-    if truncated and items and items[-1].last_modified:
-        until = items[-1].last_modified
+    if truncated and items:
+        stamps = [i.last_modified for i in items if i.last_modified]
+        if stamps:
+            # Whole second, matching the comparison: everything in it was sent.
+            until = max(stamps).replace(microsecond=0)
 
     return SyncResponse(
         since=since,

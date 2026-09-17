@@ -6,17 +6,28 @@ from tests.conftest import ADMIN, MEMBER
 
 
 # ── A37: a route decorator must sit on its handler, not on a helper ──────────
-def test_no_route_is_bound_to_a_private_helper():
+def _operations():
+    """{(METHOD, path): handler function name}, read from the generated OpenAPI
+    so it doesn't depend on FastAPI's internal route objects (which changed
+    shape between 0.115 and 0.141)."""
     from app.main import app
-    bad = [(r.path, r.endpoint.__name__) for r in app.routes
-           if hasattr(r, "endpoint") and r.endpoint.__name__.startswith("_")]
+    out = {}
+    for path, item in app.openapi()["paths"].items():
+        for method, op in item.items():
+            slug = path.strip("/").replace("/", "_").replace("-", "_").replace("{", "").replace("}", "")
+            oid = op.get("operationId", "")
+            cut = oid.rfind("_" + slug) if slug else -1
+            out[(method.upper(), path)] = oid[:cut] if cut > 0 else oid
+    return out
+
+
+def test_no_route_is_bound_to_a_private_helper():
+    bad = {k: v for k, v in _operations().items() if v.startswith("_")}
     assert not bad, f"routes bound to private helpers: {bad}"
 
 
 def test_preview_shelves_is_the_registered_handler_and_admin_only(client, as_user):
-    from app.main import app
-    ep = {r.path: r.endpoint.__name__ for r in app.routes if hasattr(r, "endpoint")}
-    assert ep["/api/goodreads/preview-shelves"] == "preview_shelves"
+    assert _operations()[("POST", "/api/goodreads/preview-shelves")] == "preview_shelves"
     as_user(MEMBER)
     r = client.post("/api/goodreads/preview-shelves", files={"file": ("g.csv", b"Title,Bookshelves\nA,owned\n", "text/csv")})
     assert r.status_code == 403

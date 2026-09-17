@@ -38,23 +38,40 @@ SETTING_SERVER_USER = "calibre_server_user"
 SETTING_SERVER_PASSWORD = "calibre_server_password"
 
 
-def server_config() -> tuple[Optional[str], Optional[str], Optional[str]]:
-    """(url, username, password) for the Calibre content server; url None = off."""
+class TargetUnknown(Exception):
+    """The settings store could not be read, so we do not know whether writes
+    belong to a content server or the library folder."""
+
+
+def server_config(strict: bool = False) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """(url, username, password) for the Calibre content server; url None = off.
+
+    `strict=True` is for WRITES: if the settings store cannot be read it raises
+    TargetUnknown instead of reporting "no server". Treating a failed lookup as
+    "no server" silently redirected a server-targeted write to the library
+    folder -- possibly while Calibre had that library open."""
     try:
-        from .routers.settings import get_setting
+        from .routers import settings as _settings
+        if strict and not _settings.settings_readable(SETTING_SERVER_URL):
+            raise TargetUnknown("settings store unavailable")
+        get_setting = _settings.get_setting
         url = (get_setting(SETTING_SERVER_URL) or "").strip()
         if not url:
             return None, None, None
         return url, (get_setting(SETTING_SERVER_USER) or "").strip() or None, \
                get_setting(SETTING_SERVER_PASSWORD) or None
+    except TargetUnknown:
+        raise
     except Exception:
+        if strict:
+            raise TargetUnknown("settings store unavailable")
         return None, None, None
 
 
 def _target_args(library: str = LIBRARY) -> list[str]:
     """The `--with-library` (and auth) arguments for a calibredb invocation:
     the content-server URL when configured, else the library path."""
-    url, user, password = server_config()
+    url, user, password = server_config(strict=True)
     if not url:
         return ["--with-library", library]
     args = ["--with-library", url]
@@ -103,8 +120,30 @@ def extract_book_metadata(path: str) -> tuple[Optional[str], Optional[str]]:
     return title, authors
 
 
-def _field_args(fields: dict) -> list[str]:
-    """Map overlay fields → calibredb `--field name:value` arguments."""
+def _current_identifiers(book_id: int, library: str) -> dict:
+    """{type: value} of a book's identifiers, read from the library on disk."""
+    import sqlite3
+    try:
+        conn = sqlite3.connect(f"file:{os.path.join(library, 'metadata.db')}?mode=ro", uri=True)
+        try:
+            return {r[0]: r[1] for r in conn.execute("SELECT type, val FROM identifiers WHERE book = ?", (book_id,))}
+        finally:
+            conn.close()
+    except Exception:
+        return {}
+
+
+def _field_args(fields: dict, identifiers: Optional[dict] = None) -> list[str]:
+    """Map overlay fields → calibredb `--field name:value` arguments.
+
+    A key that is PRESENT with a null/empty value is an explicit clear and must
+    produce an argument. Several used to be skipped, so clearing a rating, ISBN,
+    date or series index produced no operation, the sync reported success, and
+    the pending edit was discarded with the old value still in Calibre.
+    Verified against calibredb 9.13: `rating:0`, `pubdate:` and `series:` clear.
+
+    `identifiers` is the book's current identifier set. calibredb REPLACES the
+    whole set, so writing `isbn:…` alone wiped the book's goodreads/amazon ids."""
     args: list[str] = []
 
     def add(name: str, value: str):
@@ -118,19 +157,25 @@ def _field_args(fields: dict) -> list[str]:
         add("comments", str(fields["comment"] or ""))
     if "publisher" in fields:
         add("publisher", str(fields["publisher"] or ""))
-    if "pubdate" in fields and fields["pubdate"]:
-        add("pubdate", str(fields["pubdate"]))
+    if "pubdate" in fields:
+        add("pubdate", str(fields["pubdate"] or ""))      # empty = Calibre's "undefined" date
     if "series" in fields:
         add("series", str(fields["series"] or ""))
-    if fields.get("series_index") is not None:
-        add("series_index", str(fields["series_index"]))
+    if "series_index" in fields:
+        # No "empty" index exists in Calibre; 1.0 is its default for a book.
+        add("series_index", str(fields["series_index"] if fields["series_index"] is not None else 1))
     if isinstance(fields.get("tags"), list):
         add("tags", ",".join(fields["tags"]))
-    if fields.get("rating") is not None:
-        # Calibre stores rating 0–10 (5 stars × 2); overlay stores 0–5.
-        add("rating", str(int(round(float(fields["rating"]) * 2))))
-    if fields.get("isbn"):
-        add("identifiers", f"isbn:{fields['isbn']}")
+    if "rating" in fields:
+        # Calibre stores rating 0–10 (5 stars × 2); overlay stores 0–5. 0 clears it.
+        add("rating", str(int(round(float(fields["rating"] or 0) * 2))))
+    if "isbn" in fields:
+        ids = dict(identifiers or {})
+        if fields["isbn"]:
+            ids["isbn"] = str(fields["isbn"])
+        else:
+            ids.pop("isbn", None)
+        add("identifiers", ",".join(f"{k}:{v}" for k, v in ids.items()))
     return args
 
 
@@ -219,7 +264,7 @@ def sync_book(book_id: int, fields: dict, library: str = LIBRARY,
     custom = {k[len("custom:"):]: v for k, v in fields.items() if k.startswith("custom:")}
     notes = []
 
-    field_args = _field_args(std)
+    field_args = _field_args(std, _current_identifiers(book_id, library) if "isbn" in std else None)
     if custom:
         if valid_labels is None:
             valid_labels = _valid_custom_labels(library)
@@ -232,7 +277,11 @@ def sync_book(book_id: int, fields: dict, library: str = LIBRARY,
 
     if not field_args:
         return True, (" | ".join(notes) or "no-op")
-    ok, out = _run([CALIBREDB, "set_metadata", str(book_id), *field_args, *_target_args(library)])
+    try:
+        target = _target_args(library)
+    except TargetUnknown:
+        return False, "Settings are unavailable, so the write target is unknown — nothing was written. Try again shortly."
+    ok, out = _run([CALIBREDB, "set_metadata", str(book_id), *field_args, *target])
     if not ok:
         return False, _explain(out)
     return True, " | ".join([out, *notes])

@@ -49,7 +49,8 @@ def _finished_in_year(user: dict, year: int) -> list[dict]:
     from .. import access
     allowed = access.get_restriction(user)
     user_id = user["id"]
-    seen: dict = {}  # (source, book_id) -> date_read
+    col_dates: dict = {}   # calibre book_id -> date from the mapped Calibre column
+    events: list = []      # one entry per FINISH (a reread is a second entry)
     # 1) The mapped Calibre "date read" column. The DATE is the signal — any book
     #    with a read date in `year` counts, regardless of a separate read flag
     #    (Goodreads/KOReader/Calibre all write the date here).
@@ -69,7 +70,7 @@ def _finished_in_year(user: dict, year: int) -> list[dict]:
                     ).fetchall():
                         d = str(r["value"])[:10]
                         if d[:4] == str(year):
-                            seen[("calibre", r["book"])] = d
+                            col_dates[r["book"]] = d
     except Exception:
         pass
     from .settings import _pg
@@ -77,7 +78,7 @@ def _finished_in_year(user: dict, year: int) -> list[dict]:
     try:
         cur = conn.cursor()
         cur.execute("SELECT book_id, book_source, date_read FROM read_log "
-                    "WHERE user_id=%s AND date_read LIKE %s", (user_id, f"{year}-%"))
+                    "WHERE user_id=%s AND date_read LIKE %s ORDER BY date_read, id", (user_id, f"{year}-%"))
         rows = cur.fetchall()
         # Native rows: check categories against the allow-list too.
         nat_ok = None
@@ -97,10 +98,20 @@ def _finished_in_year(user: dict, year: int) -> list[dict]:
                 with _gc() as cal:
                     if not access.is_calibre_book_allowed(cal, r["book_id"], allowed):
                         continue
-            seen[(r["book_source"], r["book_id"])] = r["date_read"]
+            events.append({"book_id": r["book_id"], "book_source": r["book_source"], "date_read": r["date_read"]})
     finally:
         conn.close()
-    return [{"book_id": bid, "book_source": src, "date_read": d} for (src, bid), d in seen.items()]
+    # Every dated finish in the read log counts -- finishing a book twice in a
+    # year is two completions (this used to be a dict keyed by book, so rereads
+    # collapsed to one and the surviving date depended on row order). The
+    # Calibre column is ONE date per book, so it only adds a completion for a
+    # book the log doesn't already cover this year (the same finish recorded in
+    # both places is one event, not two).
+    logged = {e["book_id"] for e in events if e["book_source"] == "calibre"}
+    for bid, d in sorted(col_dates.items()):
+        if bid not in logged:
+            events.append({"book_id": bid, "book_source": "calibre", "date_read": d})
+    return events
 
 
 # ── Annual reading goal ───────────────────────────────────────────────────────

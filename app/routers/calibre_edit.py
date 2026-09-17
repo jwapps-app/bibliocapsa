@@ -135,9 +135,12 @@ def set_community_rating(book_id: int, body: CommunityRating, request: Request):
     return {"ok": True}
 
 
-@router.get("/lookup", summary="Search external sources for metadata candidates (admin)")
+@router.get("/lookup", summary="Search external sources for metadata candidates")
 def lookup(request: Request, title: str, author: Optional[str] = None):
-    _require_admin(request)
+    # Any signed-in user: it is a read-only title search, and the personal
+    # Want-to-Read page depends on it -- as an admin-only route, members got a
+    # bare failure there. Still rate-limited per user below; APPLYING a result
+    # to a library book remains admin-only (PUT /books/{id}).
     from .. import metadata, ratelimit
     ratelimit.check(ratelimit.client_key(request, "lookup"), limit=20, window=60)
     from .settings import get_setting, HARDCOVER_TOKEN_KEY
