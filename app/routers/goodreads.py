@@ -73,6 +73,7 @@ def _parse_gr_date(s: Optional[str]):
 
 
 from ..pg_database import get_pg as _pg
+from .. import textmatch, changes
 
 
 def _ensure_goodreads_tables(conn):
@@ -122,11 +123,22 @@ def _ensure_goodreads_tables(conn):
 
         -- book_ownership (also-physical tracking) is created by init_postgres
         -- at startup; no duplicate DDL here.
+
+        -- Provenance, so Undo reverts what the import DID rather than wiping
+        -- whole tables: who imported, and what the Calibre book's ownership row
+        -- looked like before the FIRST import touched it.
+        ALTER TABLE goodreads_books ADD COLUMN IF NOT EXISTS imported_by        INTEGER;
+        ALTER TABLE goodreads_books ADD COLUMN IF NOT EXISTS own_touched        BOOLEAN DEFAULT FALSE;
+        ALTER TABLE goodreads_books ADD COLUMN IF NOT EXISTS own_prev_existed   BOOLEAN;
+        ALTER TABLE goodreads_books ADD COLUMN IF NOT EXISTS own_prev_physical  BOOLEAN;
+        ALTER TABLE goodreads_books ADD COLUMN IF NOT EXISTS shelved_on         INTEGER[] DEFAULT '{}';
+        ALTER TABLE goodreads_books ADD COLUMN IF NOT EXISTS native_created     BOOLEAN;
     """)
     conn.commit()
 
 
-def _run_import(csv_content: str, physical_shelves: Optional[set] = None, auto_enrich: bool = True):
+def _run_import(csv_content: str, physical_shelves: Optional[set] = None, auto_enrich: bool = True,
+                user_id: Optional[int] = None):
     global _import_status
     # Lowercased set of shelves that mark physical ownership (from the import
     # selection, falling back to the saved setting).
@@ -164,9 +176,27 @@ def _run_import(csv_content: str, physical_shelves: Optional[set] = None, auto_e
             for r in cal.execute("SELECT id, isbn FROM books WHERE isbn IS NOT NULL AND isbn != ''").fetchall():
                 isbn_map[r["isbn"].replace("-", "")] = r["id"]
 
-            title_map = {}
-            for r in cal.execute("SELECT b.id, lower(b.title) as t FROM books b").fetchall():
-                title_map[r["t"]] = r["id"]
+            # Title fallback. A title alone is NOT an identity -- "Collected
+            # Poems" is a hundred different books -- so each title keeps every
+            # candidate with its authors, and _match_by_title() accepts one only
+            # when the authors agree and it is the only one that does.
+            authors_of: dict = {}
+            for r in cal.execute("SELECT bal.book, a.name FROM books_authors_link bal "
+                                 "JOIN authors a ON a.id = bal.author").fetchall():
+                authors_of.setdefault(r["book"], []).append(r["name"].replace("|", ","))
+            title_map: dict = {}
+            for r in cal.execute("SELECT b.id, b.title FROM books b").fetchall():
+                key = textmatch.norm(r["title"])
+                if key:  # a title that normalises to nothing matches nothing
+                    title_map.setdefault(key, []).append(r["id"])
+
+        def _match_by_title(title: str, author: str):
+            key = textmatch.norm(title)
+            if not key or not author:
+                return None
+            hits = [bid for bid in title_map.get(key, [])
+                    if textmatch.authors_agree([author], authors_of.get(bid, [])) is True]
+            return hits[0] if len(hits) == 1 else None
 
         def get_or_create_shelf(name: str) -> int:
             cur = pg.cursor()
@@ -175,8 +205,10 @@ def _run_import(csv_content: str, physical_shelves: Optional[set] = None, auto_e
             if row and row["shelf_id"]:
                 return row["shelf_id"]
             cur.execute(
-                "INSERT INTO shelves (name, is_smart, is_shared) VALUES (%s, FALSE, FALSE) RETURNING id",
-                (name,)
+                # Owned by the importer. With no owner the shelf counted as
+                # "legacy" and every member could see these private shelf names.
+                "INSERT INTO shelves (name, is_smart, is_shared, owner_id) VALUES (%s, FALSE, FALSE, %s) RETURNING id",
+                (name, user_id)
             )
             shelf_id = cur.fetchone()["id"]
             cur.execute(
@@ -228,8 +260,8 @@ def _run_import(csv_content: str, physical_shelves: Optional[set] = None, auto_e
                 calibre_id = isbn_map[isbn]
                 stats["matched_isbn"] += 1
             else:
-                if title.lower() in title_map:
-                    calibre_id = title_map[title.lower()]
+                calibre_id = _match_by_title(title, author)
+                if calibre_id:
                     stats["matched_title"] += 1
                 else:
                     stats["unmatched"] += 1
@@ -247,10 +279,11 @@ def _run_import(csv_content: str, physical_shelves: Optional[set] = None, auto_e
                     (goodreads_id, calibre_book_id, title, author, isbn, isbn13,
                      my_rating, publisher, binding, pages, year_published,
                      date_read, date_added, exclusive_shelf, bookshelves, my_review,
-                     read_count, owned_copies, is_dual_format)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                     read_count, owned_copies, is_dual_format, imported_by)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (goodreads_id) DO UPDATE SET
                     calibre_book_id=EXCLUDED.calibre_book_id,
+                    imported_by=COALESCE(EXCLUDED.imported_by, goodreads_books.imported_by),
                     my_rating=EXCLUDED.my_rating,
                     date_read=EXCLUDED.date_read,
                     exclusive_shelf=EXCLUDED.exclusive_shelf,
@@ -261,39 +294,91 @@ def _run_import(csv_content: str, physical_shelves: Optional[set] = None, auto_e
             """, (gr_id, calibre_id, title, author, isbn, isbn13,
                   my_rating, publisher, binding, pages, year_pub,
                   date_read, date_added, excl_shelf, bs_raw,
-                  my_review, read_count, 0, is_dual))
+                  my_review, read_count, 0, is_dual, user_id))
 
-            # Record ownership for Calibre books
-            if calibre_id:
-                cur.execute("""
-                    INSERT INTO book_ownership (book_id, book_source, has_digital, has_physical, physical_location)
-                    VALUES (%s, 'calibre', TRUE, %s, %s)
-                    ON CONFLICT (book_id, book_source) DO UPDATE SET
-                        has_digital=TRUE,
-                        has_physical=EXCLUDED.has_physical,
-                        physical_location=EXCLUDED.physical_location
-                """, (calibre_id, is_physical, physical_location))
+            # Record ownership for Calibre books. The import only ever ADDS
+            # physical ownership: a Goodreads row that isn't on a physical shelf
+            # says nothing about the copy on your shelf at home, so it must not
+            # flip a manual "physical" back off -- and it never touches the
+            # location. What the row looked like before the FIRST import is kept
+            # on the goodreads_books row so Undo can put exactly that back.
+            if calibre_id and is_physical:
+                cur.execute("SELECT has_physical FROM book_ownership "
+                            "WHERE book_id=%s AND book_source='calibre'", (calibre_id,))
+                prev = cur.fetchone()
+                if not (prev and prev["has_physical"]):
+                    cur.execute("""
+                        INSERT INTO book_ownership (book_id, book_source, has_digital, has_physical)
+                        VALUES (%s, 'calibre', TRUE, TRUE)
+                        ON CONFLICT (book_id, book_source) DO UPDATE SET has_digital=TRUE, has_physical=TRUE
+                    """, (calibre_id,))
+                    cur.execute("""
+                        UPDATE goodreads_books
+                        SET own_prev_existed = CASE WHEN own_touched THEN own_prev_existed ELSE %s END,
+                            own_prev_physical = CASE WHEN own_touched THEN own_prev_physical ELSE %s END,
+                            own_touched = TRUE
+                        WHERE goodreads_id=%s
+                    """, (prev is not None, bool(prev and prev["has_physical"]), gr_id))
+                    changes.touch([calibre_id], cur)  # ownership rides in the iOS delta sync
 
-            # Add unmatched physical books to native library
+            # Add unmatched physical books to native library -- ONCE. Re-running
+            # an import (a fresh export, or a retry after a failure halfway) must
+            # find the book it created last time, not create another: first by
+            # this Goodreads row's own mapping, then by ISBN / title+author in
+            # case the book was added by hand.
             native_book_id = None
             if not calibre_id and is_physical:
                 cur.execute("""
-                    INSERT INTO native_books
-                        (title, author, isbn, isbn13, publisher, page_count,
-                         published_date, format, location, date_added)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                    ON CONFLICT DO NOTHING
-                    RETURNING id
-                """, (title, author, isbn, isbn13, publisher, pages,
-                      str(year_pub) if year_pub else None,
-                      binding or "physical", physical_location, _parse_gr_date(date_added)))
-                nb = cur.fetchone()
-                if nb:
-                    native_book_id = nb["id"]
-                    cur.execute(
-                        "UPDATE goodreads_books SET native_book_id=%s WHERE goodreads_id=%s",
-                        (native_book_id, gr_id)
-                    )
+                    SELECT nb.id FROM goodreads_books gb JOIN native_books nb ON nb.id = gb.native_book_id
+                    WHERE gb.goodreads_id=%s
+                """, (gr_id,))
+                hit = cur.fetchone()
+                created = False
+                if not hit:
+                    cur.execute("""
+                        SELECT id FROM native_books
+                        WHERE (%(i13)s <> '' AND isbn13 = %(i13)s) OR (%(i10)s <> '' AND isbn = %(i10)s)
+                           OR (lower(title) = lower(%(t)s) AND lower(COALESCE(author,'')) = lower(%(a)s))
+                        ORDER BY id LIMIT 1
+                    """, {"i13": isbn13 or "", "i10": isbn or "", "t": title, "a": author or ""})
+                    hit = cur.fetchone()
+                if hit:
+                    native_book_id = hit["id"]
+                else:
+                    cur.execute("""
+                        INSERT INTO native_books
+                            (title, author, isbn, isbn13, publisher, page_count,
+                             published_date, format, location, date_added, added_by)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        RETURNING id
+                    """, (title, author, isbn, isbn13, publisher, pages,
+                          str(year_pub) if year_pub else None,
+                          binding or "physical", physical_location, _parse_gr_date(date_added), user_id))
+                    native_book_id = cur.fetchone()["id"]
+                    created = True
+                # native_created: TRUE only for books this import made. A book
+                # that was already in the library is linked, never owned by the
+                # import -- Undo must not delete it. (NULL = a pre-provenance
+                # import, where every mapped native book was import-made.)
+                cur.execute(
+                    "UPDATE goodreads_books SET native_book_id=%s, "
+                    "native_created = CASE WHEN native_book_id = %s THEN native_created ELSE %s END "
+                    "WHERE goodreads_id=%s",
+                    (native_book_id, native_book_id, created, gr_id)
+                )
+
+            # The importer's own reading history, recorded now and for THEM --
+            # not backfilled at the next restart onto whichever account is first.
+            rd = _parse_gr_date(date_read)
+            hist_id = calibre_id or native_book_id
+            if rd and hist_id and user_id:
+                cur.execute("""
+                    INSERT INTO read_log (book_id, book_source, user_id, date_read, source)
+                    SELECT %(b)s, %(s)s, %(u)s, %(d)s, 'goodreads'
+                    WHERE NOT EXISTS (SELECT 1 FROM read_log WHERE book_id=%(b)s AND book_source=%(s)s
+                                      AND user_id=%(u)s AND date_read=%(d)s)
+                """, {"b": hist_id, "s": "calibre" if calibre_id else "native",
+                      "u": user_id, "d": rd.strftime("%Y-%m-%d")})
 
             # Store personal rating
             if my_rating > 0:
@@ -319,6 +404,11 @@ def _run_import(csv_content: str, physical_shelves: Optional[set] = None, auto_e
                         INSERT INTO shelf_books (shelf_id, book_id, book_source)
                         VALUES (%s,%s,%s) ON CONFLICT DO NOTHING
                     """, (shelf_id, book_id, book_source))
+                    if cur.rowcount:  # the import put it there (vs. already shelved by hand)
+                        cur.execute("""
+                            UPDATE goodreads_books SET shelved_on = array_append(shelved_on, %s)
+                            WHERE goodreads_id=%s AND NOT (%s = ANY(COALESCE(shelved_on, '{}')))
+                        """, (shelf_id, gr_id, shelf_id))
 
             pg.commit()
 
@@ -411,7 +501,9 @@ def import_goodreads(
     set_setting(AUTO_ENRICH_KEY, "true" if auto_enrich else "false")
     phys = {s.strip().lower() for s in physical_shelves.split(",") if s.strip()}
     _import_status = {"status": "running", "progress": 0, "total": 0}
-    background_tasks.add_task(_run_import, csv_content, phys, auto_enrich)
+    from .. import auth
+    importer = auth.authenticate_request(request) or {}
+    background_tasks.add_task(_run_import, csv_content, phys, auto_enrich, importer.get("id"))
     return {"status": "started"}
 
 
@@ -467,32 +559,76 @@ def import_summary(request: Request):
 
 @router.delete("/import", summary="Undo Goodreads import (admin)")
 def undo_import(request: Request):
+    """Revert what the import DID -- nothing else. It used to `DELETE FROM
+    book_ownership` outright (every manually recorded physical copy and location
+    in the library, Goodreads or not) and drop imported native books without
+    clearing the records that point at them.
+
+      * Ownership: only rows the import switched to "physical", and only if
+        nobody has touched them since (still physical, still no location) --
+        restored to their pre-import state. Manual work survives.
+      * Native books: only ones the import created, removed with the same
+        reference cleanup as an ordinary delete.
+      * Shelves: only memberships the import added; an import-made shelf is
+        removed once empty, so books shelved there by hand keep their shelf.
+      * Ratings and reading history that came from Goodreads.
+    One transaction: it all reverts, or none of it does."""
     _require_admin(request)
+    pg = None
     try:
         pg = _pg()
+        _ensure_goodreads_tables(pg)
         cur = pg.cursor()
 
-        cur.execute("SELECT shelf_id FROM goodreads_shelves WHERE shelf_id IS NOT NULL")
-        shelf_ids = [r["shelf_id"] for r in cur.fetchall()]
+        # Ownership the import added, unless edited since.
+        cur.execute("""
+            SELECT DISTINCT ON (calibre_book_id) calibre_book_id AS id, own_prev_existed
+            FROM goodreads_books WHERE own_touched AND calibre_book_id IS NOT NULL
+            ORDER BY calibre_book_id, id
+        """)
+        reverted = []
+        for r in cur.fetchall():
+            if r["own_prev_existed"]:
+                cur.execute("UPDATE book_ownership SET has_physical=FALSE WHERE book_id=%s AND book_source='calibre' "
+                            "AND has_physical AND physical_location IS NULL", (r["id"],))
+            else:
+                cur.execute("DELETE FROM book_ownership WHERE book_id=%s AND book_source='calibre' "
+                            "AND has_physical AND physical_location IS NULL", (r["id"],))
+            if cur.rowcount:
+                reverted.append(r["id"])
+        changes.touch(reverted, cur)
 
-        cur.execute("SELECT native_book_id FROM goodreads_books WHERE native_book_id IS NOT NULL")
-        native_ids = [r["native_book_id"] for r in cur.fetchall()]
-
-        if shelf_ids:
-            cur.execute("DELETE FROM shelf_books WHERE shelf_id = ANY(%s)", (shelf_ids,))
-            cur.execute("DELETE FROM shelves WHERE id = ANY(%s)", (shelf_ids,))
-
+        # Shelf memberships the import added; then import-made shelves left empty.
+        cur.execute("""
+            DELETE FROM shelf_books sb USING goodreads_books gb
+            WHERE sb.shelf_id = ANY(COALESCE(gb.shelved_on, '{}'))
+              AND sb.book_id = COALESCE(gb.calibre_book_id, gb.native_book_id)
+              AND sb.book_source = CASE WHEN gb.calibre_book_id IS NOT NULL THEN 'calibre' ELSE 'native' END
+        """)
+        cur.execute("""
+            DELETE FROM shelves s USING goodreads_shelves gs
+            WHERE gs.shelf_id = s.id AND NOT EXISTS (SELECT 1 FROM shelf_books sb WHERE sb.shelf_id = s.id)
+            RETURNING s.id
+        """)
+        shelf_ids = [r["id"] for r in cur.fetchall()]
         cur.execute("DELETE FROM goodreads_shelves")
-        cur.execute("DELETE FROM book_ratings WHERE source='goodreads'")
-        cur.execute("DELETE FROM book_ownership")
 
+        cur.execute("DELETE FROM book_ratings WHERE source='goodreads'")
+        cur.execute("DELETE FROM read_log WHERE source='goodreads'")
+
+        # Native books the import created -- with every record that references
+        # them, exactly as deleting the book by hand does.
+        cur.execute("SELECT native_book_id FROM goodreads_books "
+                    "WHERE native_book_id IS NOT NULL AND native_created IS NOT FALSE")
+        native_ids = [r["native_book_id"] for r in cur.fetchall()]
         if native_ids:
+            from .native_books import NATIVE_REFERENCE_TABLES
+            for tbl in NATIVE_REFERENCE_TABLES:  # hardcoded literals
+                cur.execute(f"DELETE FROM {tbl} WHERE book_id = ANY(%s) AND book_source = 'native'", (native_ids,))
             cur.execute("DELETE FROM native_books WHERE id = ANY(%s)", (native_ids,))
 
         cur.execute("DELETE FROM goodreads_books")
-
         pg.commit()
-        pg.close()
 
         global _import_status
         _import_status = {"status": "idle"}
@@ -501,9 +637,19 @@ def undo_import(request: Request):
             "status": "undone",
             "shelves_removed": len(shelf_ids),
             "native_books_removed": len(native_ids),
+            "ownership_reverted": len(reverted),
         }
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Undo failed: {e}")
+        if pg is not None:
+            try:
+                pg.rollback()
+            except Exception:
+                pass
+        logger.error("Goodreads undo failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=503, detail="Undo failed; nothing was changed")
+    finally:
+        if pg is not None:
+            pg.close()
 
 
 @router.get("/ownership/{book_id}", summary="Get ownership info for a Calibre book")
@@ -555,6 +701,10 @@ def set_ownership(book_id: int, body: OwnershipUpdate, request: Request):
             """,
             (book_id, body.has_physical, body.physical_location),
         )
+        # Ownership rides in the iOS delta sync but never moves Calibre's
+        # last_modified -- journal it so the next incremental sync carries it.
+        from .. import changes
+        changes.touch([book_id], cur)
         pg.commit()
         pg.close()
         return {"has_digital": True, "has_physical": body.has_physical, "physical_location": body.physical_location}

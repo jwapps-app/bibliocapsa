@@ -225,6 +225,15 @@ def init_postgres():
             -- Goodreads import populates it, but core book-listing code reads it,
             -- so it must exist on a fresh database (created here, not just lazily
             -- on first import).
+            -- Application change journal for Calibre books (see app/changes.py):
+            -- the delta sync's second clock, for data Calibre's last_modified
+            -- never sees (ownership, pending edits, read status).
+            CREATE TABLE IF NOT EXISTS calibre_changes (
+                book_id    INTEGER PRIMARY KEY,
+                changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS idx_calibre_changes_at ON calibre_changes(changed_at);
+
             CREATE TABLE IF NOT EXISTS book_ownership (
                 book_id           INTEGER NOT NULL,
                 book_source       TEXT NOT NULL DEFAULT 'calibre',
@@ -387,6 +396,7 @@ def init_postgres():
             ALTER TABLE native_books ADD COLUMN IF NOT EXISTS reading_status TEXT;  -- NULL=unread, 'reading', 'read'
             ALTER TABLE native_books ADD COLUMN IF NOT EXISTS date_read TEXT;  -- 'YYYY-MM-DD' when finished
             ALTER TABLE native_books ADD COLUMN IF NOT EXISTS cover_variant INTEGER;  -- chosen generated-cover style (NULL = auto from title)
+            ALTER TABLE native_books ADD COLUMN IF NOT EXISTS cover_rev INTEGER DEFAULT 0;  -- bumped whenever the cover a client would see changes (cache-busting ?v=)
             ALTER TABLE native_books ADD COLUMN IF NOT EXISTS date_added TIMESTAMPTZ;  -- when added to the collection (e.g. Goodreads "Date Added"); falls back to created_at for sorting
 
             -- Community (Hardcover) rating for Calibre books, captured during lookups.
@@ -490,9 +500,28 @@ def init_postgres():
                   AND gb.date_added ~ '^[0-9]{4}/[0-9]{2}/[0-9]{2}$'
                   AND nb.date_added IS NULL
             """)
-            # Sync Goodreads "Date Read" history into read_log (the per-user read
-            # history that powers reading goals / year-in-review). Idempotent via
-            # NOT EXISTS; attributed to the first/admin account (single-user case).
+            # Goodreads "Date Read" history -> read_log, for imports made BEFORE
+            # the importer recorded history itself. ONE TIME ONLY (flagged in
+            # app_settings): run on every start, it re-created history a user had
+            # deliberately deleted and credited every later import -- whoever ran
+            # it -- to the first account. Imports now write their own history,
+            # for the importing user, as they run.
+            cur.execute("ALTER TABLE goodreads_books ADD COLUMN IF NOT EXISTS imported_by INTEGER")
+            cur.execute("SELECT 1 FROM app_settings WHERE key = 'goodreads_history_backfilled'")
+            first_time = cur.fetchone() is None
+            cur.execute("""
+                INSERT INTO app_settings (key, value) VALUES ('goodreads_history_backfilled', 'true')
+                ON CONFLICT (key) DO NOTHING
+            """)
+            # Shelves made by those older imports have no owner, which the shelf
+            # rules read as "legacy: visible to everyone". They were private
+            # Goodreads shelves; give them to the account that history went to.
+            cur.execute("""
+                UPDATE shelves s SET owner_id = u.id
+                FROM goodreads_shelves gs,
+                     (SELECT id FROM users WHERE password_hash IS NOT NULL ORDER BY id LIMIT 1) u
+                WHERE gs.shelf_id = s.id AND s.owner_id IS NULL AND NOT COALESCE(s.is_shared, FALSE)
+            """)
             cur.execute("""
                 INSERT INTO read_log (book_id, book_source, user_id, date_read, source)
                 SELECT COALESCE(gb.calibre_book_id, gb.native_book_id),
@@ -511,7 +540,9 @@ def init_postgres():
                         AND rl.user_id = u.id
                         AND rl.date_read = to_char(to_date(gb.date_read, 'YYYY/MM/DD'), 'YYYY-MM-DD')
                   )
-            """)
+                  AND gb.imported_by IS NULL  -- newer imports recorded their own
+                  AND %s
+            """, (first_time,))
 
         # Pending Calibre edits carry their ORIGIN: 'user' (a deliberate edit --
         # eligible for auto-sync) or 'enrich' (a bulk-enrichment PROPOSAL that

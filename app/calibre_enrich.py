@@ -9,7 +9,6 @@ the user reviews everything on /sync and pushes deliberately.
 Background thread + progress, mirroring the native enrichment job.
 """
 
-import re
 import time
 import difflib
 import logging
@@ -53,7 +52,6 @@ def _record(book_id: int, status: str) -> None:
     finally:
         conn.close()
 
-_ARTICLES = re.compile(r"^(the|a|an)\s+", re.I)
 
 
 def status() -> dict:
@@ -67,27 +65,30 @@ def cancel() -> None:
             _job["cancel"] = True
 
 
-def _norm(s: Optional[str]) -> str:
-    s = (s or "").lower()
-    s = re.sub(r"[^a-z0-9 ]", " ", s)
-    s = _ARTICLES.sub("", s)
-    return re.sub(r"\s+", " ", s).strip()
+from .textmatch import norm as _norm, authors_agree as _authors_agree
 
 
 def _best_match(title: str, author: Optional[str], cands: list[dict]) -> Optional[dict]:
-    """Pick the most confident candidate, or None if nothing is close enough."""
+    """Pick the most confident candidate, or None if nothing is close enough.
+
+    The winner's metadata is written onto the book, so "close enough" means the
+    TITLE is close AND the authors agree. A near-identical title no longer
+    overrides an author mismatch (same-title books by different people are
+    common); when one side has no author to compare, only a near-exact title
+    is accepted. A title that normalises to nothing matches nothing."""
     nt = _norm(title)
+    if not nt:
+        return None
     best, best_key = None, 0.0
     for c in cands:
-        ratio = difflib.SequenceMatcher(None, nt, _norm(c.get("title"))).ratio()
+        ct = _norm(c.get("title"))
+        if not ct:
+            continue
+        ratio = difflib.SequenceMatcher(None, nt, ct).ratio()
         if ratio < 0.82:
             continue
-        author_ok = True
-        if author:
-            cand_auth = _norm(" ".join(c.get("authors") or []))
-            toks = [w for w in _norm(author).split() if len(w) > 2]
-            author_ok = any(w in cand_auth for w in toks) if toks else True
-        if not author_ok and ratio < 0.93:
+        agree = _authors_agree([author] if author else [], c.get("authors") or [])
+        if agree is False or (agree is None and ratio < 0.93):
             continue
         key = ratio + (0.05 if c.get("description") else 0)  # prefer richer matches
         if key > best_key:

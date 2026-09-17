@@ -28,6 +28,7 @@ export interface NativeBook {
   page_count?: number; publisher?: string; published_date?: string;
   categories?: string[]; language?: string; format: string; location?: string;
   rating?: number; community_rating?: number | null; reading_status?: string | null; date_read?: string | null;
+  cover_rev?: number; // changes whenever the served cover changes; use as ?v=
 }
 export interface NativeBookUpdate {
   title?: string;

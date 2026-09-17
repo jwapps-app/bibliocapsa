@@ -20,42 +20,45 @@ from .pg_database import get_pg as _pg
 
 
 def get_status(book_id: int) -> dict:
-    """{'status': 'read'|'reading'|None, 'date_read': str|None} for one book.
-
-    Falls back to the mapped Calibre read/date columns when Bibliocapsa has no
-    record yet — so a book already marked read in Calibre shows as Read."""
-    conn = _pg()
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT status, date_read FROM calibre_read_status WHERE book_id = %s", (book_id,))
-        r = cur.fetchone()
-        if r:
-            return {"status": r["status"], "date_read": r["date_read"]}
-    finally:
-        conn.close()
-    return _status_from_calibre(book_id)
+    """{'status': 'read'|'reading'|None, 'date_read': str|None} for one book --
+    the same effective answer every list, filter and shelf gives (see
+    `effective`)."""
+    return effective([book_id]).get(book_id) or {"status": None, "date_read": None}
 
 
-def _status_from_calibre(book_id: int) -> dict:
-    """Read status derived from the mapped Calibre columns (read bool + date)."""
-    try:
-        from .routers.settings import get_setting
-        col_read = get_setting("reading_col_read")
-        if not col_read:
-            return {"status": None, "date_read": None}
-        from .database import get_conn
-        from . import calibre_custom
-        with get_conn() as cal:
-            cur = {c["label"]: c["value"] for c in calibre_custom.fetch_for_book(cal, book_id)}
-        if not cur.get(col_read):
-            return {"status": None, "date_read": None}
-        col_date = get_setting("reading_col_date")
-        d = cur.get(col_date) if col_date else None
-        return {"status": "read", "date_read": str(d)[:10] if d else None}
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).debug("calibre column status unavailable: %s", e)
-        return {"status": None, "date_read": None}
+def _truthy(v) -> bool:
+    if isinstance(v, str):
+        return v.strip().lower() in ("1", "true", "yes", "y")
+    return bool(v)
+
+
+def effective(book_ids) -> dict:
+    """{book_id: {'status', 'date_read'}} -- THE read status of each book, for
+    every endpoint. Books with no status at all are absent. `None` = whole library.
+
+    Precedence, in one place so the detail page, lists, filters, shelves and
+    Currently Reading can never disagree:
+      1. The mapped Calibre read column, *as it will be after the pending edits
+         land* (see calibre_column_statuses). True there means read, and its
+         date fills in when our own record has none.
+      2. Otherwise Bibliocapsa's own record (read / reading).
+    Marking a book unread or reading queues "read column = No", so that choice
+    shows immediately and survives a restart even while Calibre still says Yes
+    (sync off, failing, or simply not run yet)."""
+    ids = None if book_ids is None else [int(i) for i in book_ids]
+    if ids is not None and not ids:
+        return {}
+    own = statuses(ids)
+    col = calibre_column_statuses(ids)
+    out: dict = {}
+    for bid in (ids if ids is not None else set(own) | set(col)):
+        st, c = own.get(bid), col.get(bid)
+        if c:
+            date = (st or {}).get("date_read") if (st or {}).get("status") == "read" else None
+            out[bid] = {"status": "read", "date_read": date or c.get("date_read")}
+        elif st and st.get("status"):
+            out[bid] = {"status": st["status"], "date_read": st.get("date_read")}
+    return out
 
 
 def statuses(book_ids=None) -> dict:
@@ -77,11 +80,11 @@ def statuses(book_ids=None) -> dict:
 
 def calibre_column_statuses(book_ids) -> dict:
     """{book_id: {'status':'read','date_read':...}} derived from the mapped Calibre
-    read (bool) + date columns, for books whose read flag is true. Used to seed
-    list summaries so books read in Calibre show their status/date. {} if no
-    read column is mapped."""
-    ids = [int(i) for i in (book_ids or [])]
-    if not ids:
+    read (bool) + date columns, for books whose read flag is true -- with the
+    pending (not yet synced) edits to those columns applied on top. `None` means
+    the whole library. {} if no read column is mapped."""
+    ids = None if book_ids is None else [int(i) for i in book_ids]
+    if ids is not None and not ids:
         return {}
     try:
         from .routers.settings import get_setting
@@ -89,6 +92,7 @@ def calibre_column_statuses(book_ids) -> dict:
         if not col_read:
             return {}
         from .database import get_conn
+        from . import calibre_overlay as overlay
         with get_conn() as cal:
             rc = cal.execute("SELECT id FROM custom_columns WHERE label=?", (col_read,)).fetchone()
             if not rc:
@@ -99,14 +103,26 @@ def calibre_column_statuses(book_ids) -> dict:
             if col_date:
                 dc = cal.execute("SELECT id FROM custom_columns WHERE label=?", (col_date,)).fetchone()
                 dcid = int(dc["id"]) if dc else None
-            ph = ",".join(str(i) for i in ids)
+            scope = "" if ids is None else " AND book IN (" + ",".join(str(i) for i in ids) + ")"
             reads = {r["book"] for r in cal.execute(
-                f"SELECT book FROM custom_column_{rcid} WHERE book IN ({ph}) AND value=1").fetchall()}
+                f"SELECT book FROM custom_column_{rcid} WHERE value=1{scope}").fetchall()}
             dates = {}
             if dcid:
-                for r in cal.execute(f"SELECT book, value FROM custom_column_{dcid} WHERE book IN ({ph})").fetchall():
+                for r in cal.execute(
+                        f"SELECT book, value FROM custom_column_{dcid} WHERE value IS NOT NULL{scope}").fetchall():
                     dates[r["book"]] = str(r["value"])[:10] if r["value"] else None
-            return {bid: {"status": "read", "date_read": dates.get(bid)} for bid in reads}
+        # Pending edits are part of the truth: a queued "No" means the user
+        # already un-read the book here, a queued "Yes"/date means they read
+        # it -- whether or not Calibre has been told yet.
+        wanted = None if ids is None else set(ids)
+        for bid, v in overlay.field_edits(f"custom:{col_read}").items():
+            if wanted is None or bid in wanted:
+                (reads.add if _truthy(v) else reads.discard)(bid)
+        if col_date:
+            for bid, v in overlay.field_edits(f"custom:{col_date}").items():
+                if wanted is None or bid in wanted:
+                    dates[bid] = str(v)[:10] if v else None
+        return {bid: {"status": "read", "date_read": dates.get(bid)} for bid in reads}
     except Exception as e:
         import logging
         logging.getLogger(__name__).debug("calibre column statuses unavailable: %s", e)
@@ -114,31 +130,88 @@ def calibre_column_statuses(book_ids) -> dict:
 
 
 def read_book_ids(book_ids) -> set:
-    """The subset of `book_ids` marked 'read' — via our own store OR a mapped
-    Calibre read column. Used to drop finished books out of 'Currently Reading'
-    without touching their progress/stats (marking a book Read should remove it
-    from the reading list, not require a reset-to-unread)."""
-    ids = [int(i) for i in (book_ids or [])]
-    if not ids:
-        return set()
-    out = {bid for bid, s in statuses(ids).items() if s.get("status") == "read"}
-    out |= set(calibre_column_statuses(ids).keys())
-    return out
+    """The subset of `book_ids` that are effectively 'read'."""
+    return {bid for bid, st in effective(book_ids).items() if st["status"] == "read"}
 
 
-def ids_by_status() -> dict:
-    """{'read': set(book_id), 'reading': set(book_id)} across the whole library —
-    used to build the unified Read/Unread filter."""
-    out = {"read": set(), "reading": set()}
+def library_owner_id():
+    """The account the SHARED read state belongs to.
+
+    Calibre has one read column and one date per book, so that state can only
+    describe one person's reading: the library owner -- the first account, which
+    is also who a Goodreads import's history is credited to. Everyone else's
+    personal views (Currently Reading, goals, year in review) come from their
+    own read log and progress only. Override with the `reading_owner_user_id`
+    setting."""
+    try:
+        from .routers.settings import get_setting
+        v = get_setting("reading_owner_user_id")
+        if v and str(v).isdigit():
+            return int(v)
+    except Exception:
+        pass
     conn = _pg()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT book_id, status FROM calibre_read_status WHERE status IN ('read','reading')")
-        for r in cur.fetchall():
-            out.setdefault(r["status"], set()).add(r["book_id"])
-        return out
+        cur.execute("SELECT id FROM users WHERE password_hash IS NOT NULL ORDER BY id LIMIT 1")
+        r = cur.fetchone()
+        return r["id"] if r else None
     finally:
         conn.close()
+
+
+def others_only_logged(user_id, book_ids) -> set:
+    """Calibre books whose finishes were logged by OTHER accounts and never by
+    `user_id` -- i.e. shared read marks that are somebody else's reading."""
+    ids = [int(i) for i in (book_ids or [])]
+    if not ids:
+        return set()
+    conn = _pg()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT book_id, BOOL_OR(user_id = %s) AS mine FROM read_log "
+            "WHERE book_source = 'calibre' AND book_id = ANY(%s) GROUP BY book_id",
+            (user_id, ids))
+        return {r["book_id"] for r in cur.fetchall() if not r["mine"]}
+    finally:
+        conn.close()
+
+
+def finished_for(user_id, progress: dict) -> set:
+    """Which of a user's in-progress Calibre books THEY have finished.
+    `progress` maps book_id -> epoch seconds of their latest progress update.
+
+    Personal, not library-wide: another person marking a book read must not pull
+    it out of this user's Currently Reading.
+      * Anyone: a finish in their own read log, dated on/after their latest
+        progress (an older finish + newer progress is a reread in flight).
+      * The library owner additionally: the shared read state, except marks that
+        only other accounts logged."""
+    from datetime import datetime
+    ids = [int(i) for i in progress]
+    if not ids or not user_id:
+        return set()
+    conn = _pg()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT book_id, MAX(date_read) AS last FROM read_log "
+            "WHERE user_id = %s AND book_source = 'calibre' AND book_id = ANY(%s) GROUP BY book_id",
+            (user_id, ids))
+        mine = {r["book_id"]: (r["last"] or "") for r in cur.fetchall()}
+    finally:
+        conn.close()
+    out = set()
+    for bid, last in mine.items():
+        ts = progress.get(bid)
+        day = datetime.fromtimestamp(ts).strftime("%Y-%m-%d") if ts else ""
+        if last and last[:10] >= day:
+            out.add(bid)
+    if user_id == library_owner_id():
+        shared = read_book_ids(ids)
+        out |= shared - others_only_logged(user_id, shared)
+    return out
 
 
 def set_status(book_id: int, status, date_read=None) -> dict:
@@ -160,6 +233,8 @@ def set_status(book_id: int, status, date_read=None) -> dict:
                      SET status = EXCLUDED.status, date_read = EXCLUDED.date_read, updated_at = NOW()""",
                 (book_id, status, date_read),
             )
+        from . import changes
+        changes.touch([book_id], cur)
         conn.commit()
     finally:
         conn.close()

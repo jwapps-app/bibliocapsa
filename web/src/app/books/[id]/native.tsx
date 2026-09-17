@@ -17,11 +17,13 @@ export function NativeBookDetail({ book: initial }: { book: NativeBook }) {
   const router = useRouter();
   const [book, setBook] = useState<NativeBook>(initial);
   const [editing, setEditing] = useState(false);
-  const [coverVer, setCoverVer] = useState(0); // cache-buster after cover changes
   const [histRefresh, setHistRefresh] = useState(0);
   const [deleting, setDeleting] = useState(false);
 
-  const coverSrc = `/api/native/books/${book.id}/cover${coverVer ? `?v=${coverVer}` : ""}`;
+  // `cover_rev` is persisted server-side and changes whenever the cover does, so
+  // the URL stays correct after leaving and coming back (a local counter reset
+  // to 0 on every mount and handed the browser its stale cached image again).
+  const coverSrc = `/api/native/books/${book.id}/cover?v=${book.cover_rev ?? 0}`;
   const pubYear = book.published_date
     ? (book.published_date.match(/\d{4}/)?.[0] ?? book.published_date)
     : null;
@@ -81,7 +83,7 @@ export function NativeBookDetail({ book: initial }: { book: NativeBook }) {
         {editing ? (
           <EditForm
             book={book}
-            onCoverChanged={(b) => { setBook(b); setCoverVer((v) => v + 1); router.refresh(); }}
+            onCoverChanged={(b) => { setBook(b); router.refresh(); }}
             onSave={async (body) => { await patch(body); setEditing(false); }}
             onCancel={() => setEditing(false)}
             coverSrc={coverSrc}

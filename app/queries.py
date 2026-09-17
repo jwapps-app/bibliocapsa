@@ -383,3 +383,14 @@ def details_for_rows(conn: sqlite3.Connection, rows, base_url: str, ownership_ma
             physical_location=own["physical_location"],
         ))
     return out
+
+
+def native_cover_url(base_url: str, nb: dict) -> str:
+    """THE cover URL for a native book -- every serializer (library, shelves,
+    search, detail) uses this one. Always our own endpoint (it serves uploaded,
+    downloaded and generated covers alike; the raw `cover_url` column can be a
+    `manual:` marker or a third-party URL, neither of which a client can load),
+    and versioned by the persisted `cover_rev`, which changes whenever the image
+    a client would see changes -- so covers can be cached hard and still update
+    the moment they are replaced."""
+    return f"{base_url}/api/native/books/{nb['id']}/cover?v={nb.get('cover_rev') or 0}"

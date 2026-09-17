@@ -41,6 +41,19 @@ def get_edits(book_ids) -> dict:
         conn.close()
 
 
+def field_edits(field: str) -> dict:
+    """{book_id: value} for every pending edit of ONE field, library-wide. Used
+    where a whole-library decision depends on a pending value (the Read/Unread
+    filter must honour a queued "unread" before it reaches Calibre)."""
+    conn = _pg()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT book_id, value FROM calibre_edits WHERE field = %s", (field,))
+        return {r["book_id"]: r["value"] for r in cur.fetchall()}
+    finally:
+        conn.close()
+
+
 def set_edits(book_id: int, fields: dict, origin: str = "user") -> None:
     """Queue pending edits. `origin` is 'user' for a deliberate edit (eligible
     for auto-sync) or 'enrich' for a bulk-enrichment proposal awaiting review.
@@ -62,6 +75,10 @@ def set_edits(book_id: int, fields: dict, origin: str = "user") -> None:
                       SET value = EXCLUDED.value, origin = EXCLUDED.origin, updated_at = NOW(){guard}""",
                 (book_id, k, json.dumps(v), origin),
             )
+        # The book's effective metadata just changed without Calibre knowing --
+        # journal it (same transaction) so incremental syncs pick it up.
+        from . import changes
+        changes.touch([book_id], cur)
         conn.commit()
     finally:
         conn.close()
@@ -113,6 +130,9 @@ def discard(book_id: int, field: Optional[str] = None) -> None:
             cur.execute("DELETE FROM calibre_edits WHERE book_id = %s AND field = %s", (book_id, field))
         else:
             cur.execute("DELETE FROM calibre_edits WHERE book_id = %s", (book_id,))
+        # Discarding reverts what clients were shown; they need to hear that too.
+        from . import changes
+        changes.touch([book_id], cur)
         conn.commit()
     finally:
         conn.close()

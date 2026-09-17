@@ -84,6 +84,7 @@ class NativeBook(BaseModel):
     reading_status: Optional[str] = None
     date_read: Optional[str] = None
     cover_variant: Optional[int] = None
+    cover_rev: Optional[int] = 0   # changes whenever the served cover changes; use as ?v=
     owner_id: Optional[int] = None
     created_at: Optional[datetime] = None
 
@@ -223,16 +224,32 @@ def update_native_book(book_id: int, updates: NativeBookUpdate, request: Request
         conn = _pg()
         cur = conn.cursor()
 
-        # If the cover URL is changing, drop any cached image so the new URL is
-        # re-fetched on next request.
+        # Only when the cover URL actually CHANGES. Clients re-send the whole
+        # record on save (the iOS app always includes cover_url), and treating
+        # an unchanged value as "changing" deleted the cached image -- which for
+        # an uploaded cover (`manual:` marker) is the only copy there is.
+        cover_changed = False
         if "cover_url" in fields:
-            for ext in ("", ".type"):
-                try:
-                    os.remove(_cover_path(book_id) + ext)
-                except OSError:
-                    pass
+            cur.execute("SELECT cover_url FROM native_books WHERE id = %s", (book_id,))
+            before = cur.fetchone()
+            cover_changed = bool(before) and (before["cover_url"] or None) != fields["cover_url"]
+            if not cover_changed:
+                fields.pop("cover_url")
+            elif (fields["cover_url"] or "").startswith("manual:"):
+                # The marker is set by the upload route only; a client can't
+                # conjure an uploaded cover by naming one.
+                raise HTTPException(status_code=400, detail="Upload a cover image instead")
+        if not fields:
+            cur.execute("SELECT * FROM native_books WHERE id = %s", (book_id,))
+            row = cur.fetchone()
+            conn.close()
+            if not row:
+                raise HTTPException(status_code=404, detail=f"Book {book_id} not found")
+            return NativeBook(**dict(row))
 
         set_clause = ", ".join(f"{k} = %s" for k in fields)
+        if cover_changed:
+            set_clause += ", cover_rev = COALESCE(cover_rev, 0) + 1"
         values = list(fields.values()) + [book_id]
 
         cur.execute(
@@ -244,6 +261,12 @@ def update_native_book(book_id: int, updates: NativeBookUpdate, request: Request
         conn.close()
         if not row:
             raise HTTPException(status_code=404, detail=f"Book {book_id} not found")
+        if cover_changed:  # after the commit: the new URL is re-fetched on next request
+            for ext in ("", ".type"):
+                try:
+                    os.remove(_cover_path(book_id) + ext)
+                except OSError:
+                    pass
         # Marking a physical book Read logs a finish date in the per-user read
         # history (deduped per day). Dates are managed via /reading/history.
         if fields.get("reading_status") == "read":
@@ -337,6 +360,7 @@ def _enrich_one(cur, book: dict, token: Optional[str]) -> str:
     cur.execute(
         """
         UPDATE native_books SET
+            cover_rev        = COALESCE(cover_rev, 0) + CASE WHEN cover_url IS NULL AND %s::text IS NOT NULL THEN 1 ELSE 0 END,
             cover_url        = COALESCE(cover_url, %s),
             description      = COALESCE(description, %s),
             page_count       = COALESCE(page_count, %s),
@@ -350,7 +374,7 @@ def _enrich_one(cur, book: dict, token: Optional[str]) -> str:
         WHERE id = %s
         """,
         (
-            cover_url, md.description, md.page_count, md.publisher,
+            cover_url, cover_url, md.description, md.page_count, md.publisher,
             md.published_date, md.rating, md.source, book["id"],
         ),
     )
@@ -589,8 +613,7 @@ def get_native_cover(book_id: int, request: Request):
                 with open(tpath) as tf:
                     content_type = tf.read().strip() or "image/jpeg"
             content_type = _safe_image_ct(content_type)
-            return Response(content=blob, media_type=content_type,
-                            headers={"Cache-Control": "private, max-age=2592000"})
+            return _cover_response(request, blob, content_type)
         except Exception:
             pass
 
@@ -614,12 +637,28 @@ def get_native_cover(book_id: int, request: Request):
         if downloaded:
             blob, content_type = downloaded
             _cache_cover(book_id, blob, content_type)
-            return Response(content=blob, media_type=_safe_image_ct(content_type),
-                            headers={"Cache-Control": "private, max-age=2592000"})
+            return _cover_response(request, blob, _safe_image_ct(content_type))
         # fall through to a generated cover if the external fetch fails
 
     # No real cover — serve a Calibre-style generated cover (title + author).
-    return _generated_cover(row.get("title"), row.get("author"), row.get("cover_variant"))
+    return _generated_cover(row.get("title"), row.get("author"), row.get("cover_variant"), request)
+
+
+def _cover_response(request, blob: bytes, content_type: str) -> Response:
+    """Serve cover bytes with a validator, and cache by how the URL was asked for:
+      * `?v=<cover_rev>` (what our serializers hand out): the URL itself changes
+        when the cover does, so it may be kept for a month.
+      * bare URL (clients that build it themselves -- iOS, a few web pages):
+        must revalidate. The ETag makes that a 304 with no body, and a replaced
+        cover shows up at once instead of up to 30 days later."""
+    import hashlib
+    etag = '"' + hashlib.sha1(blob).hexdigest()[:20] + '"'
+    versioned = request is not None and "v" in request.query_params
+    headers = {"ETag": etag,
+               "Cache-Control": "private, max-age=2592000" if versioned else "private, no-cache"}
+    if request is not None and request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    return Response(content=blob, media_type=content_type, headers=headers)
 
 
 # A proxied/remote cover URL is admin-set; never re-serve it with an
@@ -633,11 +672,18 @@ def _safe_image_ct(ct: str) -> str:
     return ct if (ct or "").split(";")[0].strip().lower() in _SAFE_IMAGE_CT else "image/jpeg"
 
 
-def _generated_cover(title, author, variant) -> Response:
+def _generated_cover(title, author, variant, request=None) -> Response:
+    """Drawn from the title and author, so it changes when THEY do -- which
+    `cover_rev` doesn't track. Always revalidated (it's a tiny SVG and the ETag
+    turns that into a 304), never cached blind."""
     from .. import cover_gen
-    svg = cover_gen.generate_svg(title or "Untitled", author or "", variant)
-    return Response(content=svg.encode("utf-8"), media_type="image/svg+xml",
-                    headers={"Cache-Control": "private, max-age=86400"})
+    import hashlib
+    svg = cover_gen.generate_svg(title or "Untitled", author or "", variant).encode("utf-8")
+    etag = '"' + hashlib.sha1(svg).hexdigest()[:20] + '"'
+    headers = {"ETag": etag, "Cache-Control": "private, no-cache"}
+    if request is not None and request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    return Response(content=svg, media_type="image/svg+xml", headers=headers)
 
 
 @router.post("/{book_id}/cover/generate", response_model=NativeBook, summary="Cycle the generated cover style")
@@ -657,7 +703,7 @@ def regenerate_native_cover(book_id: int, request: Request):
                    else cover_gen.variant_index(row["title"], row["author"], None))
         nxt = (current + 1) % cover_gen.NUM_PALETTES
         cur.execute(
-            "UPDATE native_books SET cover_variant=%s, updated_at=NOW() WHERE id=%s RETURNING *",
+            "UPDATE native_books SET cover_variant=%s, cover_rev=COALESCE(cover_rev,0)+1, updated_at=NOW() WHERE id=%s RETURNING *",
             (nxt, book_id),
         )
         updated = cur.fetchone()
@@ -695,7 +741,7 @@ def upload_native_cover(book_id: int, request: Request, file: UploadFile = File(
         cur.execute(
             """
             UPDATE native_books
-               SET cover_url = %s, metadata_source = 'manual',
+               SET cover_url = %s, cover_rev = COALESCE(cover_rev,0)+1, metadata_source = 'manual',
                    enrich_status = 'manual', enriched_at = NOW(), updated_at = NOW()
              WHERE id = %s
             RETURNING *
@@ -723,7 +769,7 @@ def delete_native_cover(book_id: int, request: Request):
         conn = _pg()
         cur = conn.cursor()
         cur.execute(
-            "UPDATE native_books SET cover_url = NULL, updated_at = NOW() WHERE id = %s RETURNING *",
+            "UPDATE native_books SET cover_url = NULL, cover_rev = COALESCE(cover_rev,0)+1, updated_at = NOW() WHERE id = %s RETURNING *",
             (book_id,),
         )
         row = cur.fetchone()
@@ -744,6 +790,13 @@ def delete_native_cover(book_id: int, request: Request):
         raise HTTPException(status_code=503, detail=f"Database error: {e}")
 
 
+# Every table that references a native book by (book_id, book_source='native').
+# None of them is a real FK, so whoever deletes a native book clears these first
+# -- one list, shared with the Goodreads undo, so the two can't drift apart.
+NATIVE_REFERENCE_TABLES = ("shelf_books", "book_ownership", "lending", "reading_progress",
+                           "document_map", "read_log", "wishlist", "book_ratings")
+
+
 @router.delete("/{book_id}", status_code=204, summary="Delete a native (physical/digital) book (admin)")
 def delete_native_book(book_id: int, request: Request):
     _require_admin(request)
@@ -757,8 +810,7 @@ def delete_native_book(book_id: int, request: Request):
         # book_id is a plain integer in these tables (not an FK to native_books),
         # so nothing cascades — clear every 'native' reference explicitly, then the
         # book row, in one transaction. Table names are hardcoded literals.
-        for tbl in ("shelf_books", "book_ownership", "lending", "reading_progress",
-                    "document_map", "read_log", "wishlist"):
+        for tbl in NATIVE_REFERENCE_TABLES:
             cur.execute(
                 f"DELETE FROM {tbl} WHERE book_id = %s AND book_source = 'native'",
                 (book_id,),

@@ -54,10 +54,16 @@ def _finished_in_year(user: dict, year: int) -> list[dict]:
     # 1) The mapped Calibre "date read" column. The DATE is the signal — any book
     #    with a read date in `year` counts, regardless of a separate read flag
     #    (Goodreads/KOReader/Calibre all write the date here).
+    #    That column is ONE date per book for the whole library, so it can only
+    #    be one person's reading: the library owner's. Crediting it to everyone
+    #    handed a new member the owner's entire year. Other accounts count their
+    #    own read log only.
+    from .. import calibre_read
+    is_owner = user_id == calibre_read.library_owner_id()
     try:
         from .settings import get_setting
         from ..database import get_conn
-        col_date = get_setting("reading_col_date")
+        col_date = get_setting("reading_col_date") if is_owner else None
         if col_date:
             with get_conn() as cal:
                 dc = cal.execute("SELECT id FROM custom_columns WHERE label = ?", (col_date,)).fetchone()
@@ -108,8 +114,10 @@ def _finished_in_year(user: dict, year: int) -> list[dict]:
     # book the log doesn't already cover this year (the same finish recorded in
     # both places is one event, not two).
     logged = {e["book_id"] for e in events if e["book_source"] == "calibre"}
+    # ...and not for a date another account put there by finishing the book.
+    theirs = calibre_read.others_only_logged(user_id, list(col_dates)) if col_dates else set()
     for bid, d in sorted(col_dates.items()):
-        if bid not in logged:
+        if bid not in logged and bid not in theirs:
             events.append({"book_id": bid, "book_source": "calibre", "date_read": d})
     return events
 

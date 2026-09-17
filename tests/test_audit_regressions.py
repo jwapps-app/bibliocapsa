@@ -155,11 +155,12 @@ def test_enrichment_writes_are_marked_and_cannot_replace_a_user_edit(monkeypatch
         def commit(self): pass
         def close(self): pass
     monkeypatch.setattr(ov, "_pg", lambda: C())
+    last_edit = lambda: [x for x in sql if "INTO calibre_edits" in x[0]][-1]  # (the journal write follows it)
     ov.set_edits(1, {"comment": "guess"}, origin="enrich")
-    q, p = sql[-1]
+    q, p = last_edit()
     assert p[3] == "enrich" and "WHERE calibre_edits.origin <> 'user'" in q
     ov.set_edits(1, {"comment": "mine"})
-    q, p = sql[-1]
+    q, p = last_edit()
     assert p[3] == "user" and "origin <> 'user'" not in q
 
 

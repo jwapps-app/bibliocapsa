@@ -4,7 +4,7 @@ from fastapi import APIRouter, Query, HTTPException, Request
 from typing import Optional, Literal
 from ..database import get_conn
 from ..schemas import BookDetail, BookSummary, PaginatedBooks
-from ..queries import row_to_summary, row_to_detail, summaries_for_rows
+from ..queries import row_to_summary, row_to_detail, summaries_for_rows, native_cover_url
 from .. import access
 from .. import calibre_overlay as overlay
 from .. import calibre_custom
@@ -39,103 +39,49 @@ def _merge_overlay(items):
     if cal_ids:
         from .. import community, calibre_read
         ratings = community.get_calibre_ratings(cal_ids)
-        rstat = calibre_read.statuses(cal_ids)
-        # Seed read status from the mapped Calibre column for books without a
-        # Bibliocapsa record (e.g. existing Goodreads-imported read books) AND
-        # for records that carry no date: marking a book read stores the status
-        # with an empty date_read, while the real date lives in the Calibre Date
-        # Read column. The `date_read` sort already reads that column, so without
-        # this fallback the payload disagreed with the sort and clients that
-        # order locally (iOS) dropped recently-read books to the bottom.
-        missing = [bid for bid in cal_ids
-                   if bid not in rstat or not (rstat[bid].get("date_read") or "")]
-        colstat = calibre_read.calibre_column_statuses(missing)
+        # One effective status per book (calibre_read.effective): the mapped
+        # Calibre column -- including edits still waiting to sync -- over our own
+        # record, with the column's date filling in when ours has none. Clients
+        # that order locally (iOS) rely on status and date agreeing with the
+        # server's `date_read` sort.
+        eff = calibre_read.effective(cal_ids)
         for it in items:
             if getattr(it, "book_source", None) != "native":
                 if ratings.get(it.id) is not None:
                     it.community_rating = ratings[it.id]
-                st = rstat.get(it.id) or colstat.get(it.id)
+                st = eff.get(it.id)
                 if st:
-                    status = st["status"]
-                    date_read = st.get("date_read") or ""
-                    # A Calibre-column entry exists ONLY when Calibre's read
-                    # flag is true (calibre_column_statuses filters value=1),
-                    # so its presence means "read" regardless of what our own
-                    # store says. The store can lag: a progress sync leaves a
-                    # book at "reading" with no date after it was finished
-                    # and dated in Calibre. Gating this on the STORED status
-                    # being "read" was the bug — the book was sorted first by
-                    # its Calibre date yet reported as "reading" with an
-                    # empty date, and iOS (which sorts locally) sank it to
-                    # the bottom. Same rule as _read_filter_clause, which
-                    # already counts a book read from either source.
-                    col = colstat.get(it.id)
-                    if col:
-                        status = "read"
-                        if not date_read:
-                            date_read = col.get("date_read") or ""
-                    it.reading_status = status
-                    it.date_read = date_read
+                    it.reading_status = st["status"]
+                    it.date_read = st.get("date_read") or ""
     return items
 
 
 def _read_filter_clause(read_filter, conn):
-    """SQL fragment + params for filtering Calibre books (alias `b`) by the
-    unified read status. A book counts as read from EITHER source:
-      • Bibliocapsa's own calibre_read_status store, OR
-      • the mapped Calibre Yes/No column (Settings → Reading columns) — so books
-        already marked read in Calibre (e.g. a Goodreads import) show up too.
-    Book ids are integer PKs from our own DB, so they're inlined directly —
+    """SQL fragment + params for filtering Calibre books (alias `b`) by read
+    status -- built from calibre_read.effective(), the SAME calculation that
+    fills `reading_status` in the payload, so a book can never sit in a filter
+    its own card contradicts (Calibre's mapped column, edits still waiting to
+    sync, and Bibliocapsa's own record are all folded in there).
+    Book ids are integer PKs from our own data, so they're inlined directly --
     avoiding SQLite's 999-bound-parameter limit on large read/unread sets.
-    `conn` is the Calibre (SQLite) connection. Returns (sql, params) or None."""
-    from .. import calibre_read, calibre_custom
-    from .settings import get_setting
-
-    def _in(ids):
-        return "(" + ",".join(str(int(i)) for i in ids) + ")"
-
-    # No filter requested: nothing to do. This used to fall through and load
-    # every read/reading row from Postgres on EVERY list request, then discard it.
+    Returns (sql, params) or None."""
+    # No filter requested: nothing to do (and nothing to load).
     if read_filter not in ("read", "reading", "unread"):
         return None
-    sets = calibre_read.ids_by_status()
-    read_ids = sets["read"]
-    reading_ids = sets["reading"]
-    busy_ids = read_ids | reading_ids
+    from .. import calibre_read
 
-    # The mapped Calibre read column, as a `b.id` predicate over real Calibre data.
-    col_read = get_setting("reading_col_read")
-    col_pred = None
-    if col_read:
-        p = calibre_custom.filter_predicate(conn, col_read, "1")  # bool → no params
-        if p:
-            col_pred = p[0]
+    def _in(ids):
+        return "(" + ",".join(str(int(i)) for i in sorted(ids)) + ")"
 
-    def _read_expr():
-        parts = []
-        if read_ids:
-            parts.append(f"b.id IN {_in(read_ids)}")
-        if col_pred:
-            parts.append(col_pred)
-        return "(" + " OR ".join(parts) + ")" if parts else "1=0"
-
-    def _busy_expr():
-        # "read or reading" — for the unread filter to exclude.
-        parts = []
-        if busy_ids:
-            parts.append(f"b.id IN {_in(busy_ids)}")
-        if col_pred:
-            parts.append(col_pred)
-        return "(" + " OR ".join(parts) + ")" if parts else None
-
+    eff = calibre_read.effective(None)
+    read_ids = {bid for bid, st in eff.items() if st["status"] == "read"}
+    reading_ids = {bid for bid, st in eff.items() if st["status"] == "reading"}
     if read_filter == "read":
-        return (_read_expr(), [])
+        return (f"b.id IN {_in(read_ids)}", []) if read_ids else ("1=0", [])
     if read_filter == "reading":
-        return ("1=0", []) if not reading_ids else (f"b.id IN {_in(reading_ids)}", [])
-    if read_filter == "unread":
-        be = _busy_expr()
-        return ("1=1", []) if be is None else (f"NOT {be}", [])
-    return None
+        return (f"b.id IN {_in(reading_ids)}", []) if reading_ids else ("1=0", [])
+    busy = read_ids | reading_ids
+    return (f"b.id NOT IN {_in(busy)}", []) if busy else ("1=1", [])
 
 
 def _native_read_clause(read_filter):
@@ -149,41 +95,77 @@ def _native_read_clause(read_filter):
     return None
 
 
-def _date_col_id(conn):
-    """custom_column_<id> table id for the mapped Calibre 'Date read' column, or None."""
-    return _mapped_col_id(conn, "reading_col_date")
+# Sorts the merged (Calibre + native) list supports. Anything else is sorted by
+# title -- explicitly, here, rather than by falling through a chain of elifs.
+_MERGED_SORTS = {"title", "author", "added", "date_read", "pubdate", "last_modified",
+                 "series", "series_index"}
 
 
-def _read_col_id(conn):
-    """custom_column_<id> table id for the mapped Calibre 'Read' (bool) column, or None."""
-    return _mapped_col_id(conn, "reading_col_read")
+def _text_key(v) -> str:
+    """Case- and accent-insensitive text key, identical for both stores."""
+    import unicodedata
+    t = unicodedata.normalize("NFKD", str(v or ""))
+    return "".join(c for c in t if not unicodedata.combining(c)).casefold().strip()
 
 
-def _mapped_col_id(conn, setting_key):
-    try:
-        from .settings import get_setting
-        lbl = get_setting(setting_key)
-        if not lbl:
-            return None
-        r = conn.execute("SELECT id FROM custom_columns WHERE label = ?", (lbl,)).fetchone()
-        return int(r["id"]) if r else None
-    except Exception:
+def _sort_key(sort_by, v):
+    """Normalise one raw sort value. None = "has no value" (always sorted last)."""
+    if v is None or v == "":
         return None
+    if sort_by in ("added", "last_modified"):
+        k = float(v) if isinstance(v, (int, float)) or hasattr(v, "__float__") else _cal_epoch(v)
+        return k or None
+    if sort_by in ("date_read", "pubdate"):
+        d = str(v)[:10]
+        return None if d.startswith("0101-01-01") else d  # Calibre's "undefined date"
+    if sort_by == "series_index":
+        return float(v)
+    return _text_key(v) or None
 
 
-def _calibre_read_date_expr(conn):
-    """A SQL expression (over alias `b`) giving a Calibre book's read date, but
-    ONLY when the book is actually marked read — so unread books with a stray
-    Date Read value don't rank in the 'Date read' sort. Falls back sensibly when
-    columns aren't mapped."""
-    dcid = _date_col_id(conn)
-    rcid = _read_col_id(conn)
-    if dcid and rcid:
-        return (f"(CASE WHEN EXISTS (SELECT 1 FROM custom_column_{rcid} rc WHERE rc.book=b.id AND rc.value=1) "
-                f"THEN (SELECT value FROM custom_column_{dcid} dc WHERE dc.book=b.id) END)")
-    if dcid:
-        return f"(SELECT value FROM custom_column_{dcid} dc WHERE dc.book=b.id)"
-    return "b.timestamp"
+def _ordered(light, reverse, by_title_within_ties=False):
+    """ONE ordering rule for (source, id, key, title_key) rows: by key in the
+    requested direction; rows without a key always last; ties -- and the keyless
+    tail -- by (source, id), so the order is total and a book can neither repeat
+    nor vanish between pages. (source, id) is also the order equal keys have
+    always come back in, which matters: the iOS app ranks "date added" from
+    this list, and a bulk import shares one timestamp across hundreds of books.)
+    Text sorts pass by_title_within_ties so one author's books run A-Z."""
+    tie = (lambda t: (t[3], t[0], t[1])) if by_title_within_ties else (lambda t: (t[0], t[1]))
+    have = sorted((t for t in light if t[2] is not None), key=tie)
+    have.sort(key=lambda t: t[2], reverse=reverse)  # stable: keeps the tie order
+    return have + sorted((t for t in light if t[2] is None), key=tie)
+
+
+def _calibre_light(conn, where, params, sort_by):
+    """(source, id, key, title_key) for every Calibre book matching `where`."""
+    key_sql = {
+        "title":         "b.sort",
+        "author":        "b.author_sort",
+        "added":         "b.timestamp",
+        "last_modified": "b.last_modified",
+        "pubdate":       "b.pubdate",
+        "series_index":  "b.series_index",
+        "series":        "(SELECT s.name FROM series s JOIN books_series_link bsl ON bsl.series=s.id "
+                         "WHERE bsl.book=b.id LIMIT 1)",
+    }.get(sort_by, "NULL")
+    rows = conn.execute(
+        f"SELECT b.id, b.sort, b.title, b.series_index, {key_sql} AS k FROM books b WHERE {where}", params
+    ).fetchall()
+    if sort_by == "date_read":
+        # The effective read date -- Calibre's column, edits waiting to sync and
+        # our own record -- i.e. exactly the `date_read` the payload reports.
+        from .. import calibre_read
+        eff = calibre_read.effective(None)
+        dates = {bid: st.get("date_read") for bid, st in eff.items() if st["status"] == "read"}
+        key = lambda r: _sort_key(sort_by, dates.get(r["id"]))
+    elif sort_by == "series":
+        # Within a series, by position.
+        key = lambda r: (_text_key(r["k"]), float(r["series_index"] or 0)) if r["k"] else None
+    else:
+        key = lambda r: _sort_key(sort_by, r["k"] or (r["title"] if sort_by == "title" else None))
+    return [("calibre", r["id"], key(r), _text_key(r["sort"] or r["title"])) for r in rows]
+
 
 router = APIRouter()
 
@@ -198,9 +180,7 @@ from ..pg_database import get_pg as _pg
 def _native_to_summary(nb: dict, base_url: str) -> BookSummary:
     """Convert a native_books row to BookSummary. Native books always report a
     cover — the cover endpoint serves the uploaded image when present, otherwise
-    a generated (Calibre-style) one. `?v` busts the browser cache after a
-    regenerate/upload."""
-    ver = nb.get("cover_variant") or 0
+    a generated (Calibre-style) one."""
     return BookSummary(
         id=nb["id"],
         title=nb["title"] or "Unknown",
@@ -209,7 +189,7 @@ def _native_to_summary(nb: dict, base_url: str) -> BookSummary:
         series=None,
         tags=[],
         pubdate=None,
-        cover_url=f"{base_url}/api/native/books/{nb['id']}/cover?v={ver}",
+        cover_url=native_cover_url(base_url, nb),
         has_cover=True,
         rating=nb.get("rating"),
         community_rating=nb.get("community_rating"),
@@ -232,16 +212,20 @@ def _merged_all(request, base_url, page, page_size, offset, search, sort_dir, al
     source; full summaries are built solely for the page_size items on this page.
     """
     reverse = sort_dir.lower() == "desc"
+    if sort_by not in _MERGED_SORTS:
+        sort_by = "title"
     by_date = sort_by == "added"
-    by_read_date = sort_by == "date_read"
-    by_author = sort_by == "author"
-    fetch_n = offset + page_size
-    sql_dir = "DESC" if reverse else "ASC"
 
     nat_pred, nat_pred_params = access.native_predicate(allowed)
     cal_pred, cal_pred_params = access.calibre_predicate(allowed, "b")
 
-    # ── Lightweight native rows ──
+    # ── Lightweight native rows: (source, id, sort key, title key) ──
+    # EVERY matching row, not the first offset+page_size per source: the two
+    # stores collate differently (SQLite NOCASE is ASCII-only, Postgres lower()
+    # is locale-aware, and the read date isn't a column in either), so a
+    # per-source LIMIT ranked by one rule and merged by another silently dropped
+    # books. The rows are two or three scalars each; the ordering is decided
+    # once, here, by _ordered().
     pg = _pg()
     cur = pg.cursor()
     native_params: list = []
@@ -258,40 +242,20 @@ def _merged_all(request, base_url, page, page_size, offset, search, sort_dir, al
     if physical_only:
         native_conds.append("(format != 'digital' OR format IS NULL)")
     native_where = " AND ".join(native_conds)
-    cur.execute(f"SELECT COUNT(*) AS c FROM native_books WHERE {native_where}", native_params)
-    native_total = cur.fetchone()["c"]
-    if by_date:
+    native_key_sql = {
         # "Date added" = when the book entered the collection — the Goodreads
         # "Date Added" for imports (stored in date_added), falling back to the
         # Bibliocapsa row-creation time for manually-added books.
-        cur.execute(
-            f"SELECT id, EXTRACT(EPOCH FROM COALESCE(date_added, created_at)) AS ek FROM native_books WHERE {native_where} "
-            f"ORDER BY COALESCE(date_added, created_at) {sql_dir} NULLS LAST LIMIT %s",
-            native_params + [fetch_n],
-        )
-        native_light = [("native", r["id"], float(r["ek"] or 0)) for r in cur.fetchall()]
-    elif by_read_date:
-        cur.execute(
-            f"SELECT id, CASE WHEN reading_status='read' THEN COALESCE(date_read, '') ELSE '' END AS dr "
-            f"FROM native_books WHERE {native_where} "
-            f"ORDER BY (CASE WHEN reading_status='read' THEN date_read END) {sql_dir} NULLS LAST LIMIT %s",
-            native_params + [fetch_n],
-        )
-        native_light = [("native", r["id"], (r["dr"] or "")[:10]) for r in cur.fetchall()]
-    elif by_author:
-        cur.execute(
-            f"SELECT id, COALESCE(author, '') AS ak FROM native_books WHERE {native_where} "
-            f"ORDER BY lower(author) {sql_dir} NULLS LAST LIMIT %s",
-            native_params + [fetch_n],
-        )
-        native_light = [("native", r["id"], (r["ak"] or "").casefold()) for r in cur.fetchall()]
-    else:
-        cur.execute(
-            f"SELECT id, title FROM native_books WHERE {native_where} "
-            f"ORDER BY lower(title) {sql_dir} LIMIT %s",
-            native_params + [fetch_n],
-        )
-        native_light = [("native", r["id"], (r["title"] or "").casefold()) for r in cur.fetchall()]
+        "added":         "EXTRACT(EPOCH FROM COALESCE(date_added, created_at))",
+        "last_modified": "EXTRACT(EPOCH FROM updated_at)",
+        "date_read":     "CASE WHEN reading_status='read' THEN date_read END",
+        "author":        "author",
+        "pubdate":       "published_date",
+        "title":         "title",
+    }.get(sort_by, "NULL")  # series / series_index: native books have neither
+    cur.execute(f"SELECT id, title, {native_key_sql} AS k FROM native_books WHERE {native_where}", native_params)
+    native_light = [("native", r["id"], _sort_key(sort_by, r["k"]), _text_key(r["title"])) for r in cur.fetchall()]
+    native_total = len(native_light)
     pg.close()
 
     # ── Lightweight Calibre rows ──
@@ -328,51 +292,12 @@ def _merged_all(request, base_url, page, page_size, offset, search, sort_dir, al
                 "ORDER BY b2.series_index ASC, b2.id ASC LIMIT 1))"
             )
         cal_where = " AND ".join(cal_conds)
-        calibre_total = conn.execute(f"SELECT COUNT(*) FROM books b WHERE {cal_where}", cal_params).fetchone()[0]
-        if by_date:
-            light_rows = conn.execute(
-                f"SELECT b.id, b.timestamp FROM books b WHERE {cal_where} "
-                f"ORDER BY b.timestamp {sql_dir} LIMIT ?",
-                cal_params + [fetch_n],
-            ).fetchall()
-            calibre_light = [("calibre", r["id"], _cal_epoch(r["timestamp"])) for r in light_rows]
-        elif by_read_date:
-            # Sort by the read date — but only for books actually marked read
-            # (the expr is NULL for unread books). Fall back to Bibliocapsa's own
-            # read date for books read only there.
-            from .. import calibre_read
-            rstat = calibre_read.statuses()
-            date_expr = _calibre_read_date_expr(conn)
-            light_rows = conn.execute(
-                f"SELECT b.id, ({date_expr}) AS dr FROM books b WHERE {cal_where} "
-                f"ORDER BY dr {sql_dir} NULLS LAST LIMIT ?",
-                cal_params + [fetch_n],
-            ).fetchall()
-
-            def _rk(r):
-                if r["dr"]:
-                    return str(r["dr"])[:10]
-                st = rstat.get(r["id"])
-                return (st["date_read"] or "")[:10] if st and st.get("status") == "read" and st.get("date_read") else ""
-            calibre_light = [("calibre", r["id"], _rk(r)) for r in light_rows]
-        elif by_author:
-            light_rows = conn.execute(
-                f"SELECT b.id, b.author_sort FROM books b WHERE {cal_where} "
-                f"ORDER BY b.author_sort COLLATE NOCASE {sql_dir} LIMIT ?",
-                cal_params + [fetch_n],
-            ).fetchall()
-            calibre_light = [("calibre", r["id"], (r["author_sort"] or "").casefold()) for r in light_rows]
-        else:
-            light_rows = conn.execute(
-                f"SELECT b.id, b.sort, b.title FROM books b WHERE {cal_where} "
-                f"ORDER BY b.sort COLLATE NOCASE {sql_dir} LIMIT ?",
-                cal_params + [fetch_n],
-            ).fetchall()
-            calibre_light = [("calibre", r["id"], (r["sort"] or r["title"] or "").casefold()) for r in light_rows]
+        calibre_light = _calibre_light(conn, cal_where, cal_params, sort_by)
+        calibre_total = len(calibre_light)
 
         # ── Merge by key, take this page's slice ──
-        merged = sorted(calibre_light + native_light, key=lambda t: t[2], reverse=reverse)
-        page_slice = merged[offset:offset + page_size]
+        merged = _ordered(calibre_light + native_light, reverse, by_title_within_ties=sort_by in ("author", "series"))
+        page_slice = [(src, bid, k) for src, bid, k, _ in merged[offset:offset + page_size]]
 
         cal_ids = [bid for src, bid, _ in page_slice if src == "calibre"]
         nat_ids = [bid for src, bid, _ in page_slice if src == "native"]
@@ -561,8 +486,15 @@ def list_books(
             "series_index":  "b.series_index",
             "series":        "(SELECT s.name FROM series s JOIN books_series_link bsl ON bsl.series=s.id WHERE bsl.book=b.id LIMIT 1)",
         }
+        read_order = None
         if sort_by == "date_read":
-            order = f"({_calibre_read_date_expr(conn)}) {_SQL_DIR[sort_dir]} NULLS LAST"
+            # The read date lives in three places (Calibre's column, edits waiting
+            # to sync, our own record), so it can't be an ORDER BY. Rank the
+            # matching ids by the effective date -- the same rule as the merged
+            # list -- and page through that.
+            read_order = [bid for _, bid, _, _ in
+                          _ordered(_calibre_light(conn, where, params, "date_read"), sort_dir == "desc")]
+            order = "b.sort"
         elif custom_sort:
             label = sort_by.split(":", 1)[1]
             col = conn.execute("SELECT id, normalized FROM custom_columns WHERE label = ?", (label,)).fetchone()
@@ -582,19 +514,27 @@ def list_books(
         else:
             order = f"{sort_map.get(sort_by, 'b.sort')} {_SQL_DIR[sort_dir]} NULLS LAST"
 
-        total = conn.execute(f"SELECT COUNT(*) FROM books b WHERE {where}", params).fetchone()[0]
-
-        rows = conn.execute(
-            f"""
-            SELECT b.id, b.title, b.sort, b.pubdate, b.last_modified,
-                   b.has_cover, b.uuid, b.path, b.series_index, b.author_sort
-            FROM books b
-            WHERE {where}
-            ORDER BY {order}
-            LIMIT ? OFFSET ?
-            """,
-            params + [page_size, offset],
-        ).fetchall()
+        cols = ("b.id, b.title, b.sort, b.pubdate, b.last_modified, "
+                "b.has_cover, b.uuid, b.path, b.series_index, b.author_sort")
+        if read_order is not None:
+            total = len(read_order)
+            page_ids = read_order[offset:offset + page_size]
+            by_id = {}
+            if page_ids:
+                ph = ",".join("?" * len(page_ids))
+                by_id = {r["id"]: r for r in conn.execute(
+                    f"SELECT {cols} FROM books b WHERE b.id IN ({ph})", page_ids).fetchall()}
+            rows = [by_id[i] for i in page_ids if i in by_id]
+        else:
+            total = conn.execute(f"SELECT COUNT(*) FROM books b WHERE {where}", params).fetchone()[0]
+            # `b.sort, b.id` makes the order total: without a unique tie-breaker
+            # SQLite may return equal-key rows in a different order per query, so
+            # a book could repeat on one page and never appear on the next.
+            rows = conn.execute(
+                f"SELECT {cols} FROM books b WHERE {where} "
+                f"ORDER BY {order}, b.sort COLLATE NOCASE, b.id LIMIT ? OFFSET ?",
+                params + [page_size, offset],
+            ).fetchall()
 
         # Batch ownership
         book_ids = [row["id"] for row in rows]
@@ -655,20 +595,9 @@ def get_book(book_id: int, request: Request):
             detail.custom = calibre_custom.merge_overlay(conn, detail.custom, custom_edits)
         from .. import community, calibre_read
         detail.community_rating = community.get_calibre_ratings([book_id]).get(book_id)
-        st = calibre_read.get_status(book_id)
+        st = calibre_read.get_status(book_id)  # same rule as the list payload
         status = st["status"]
         date_read = st.get("date_read") or ""
-        if status != "read" or not date_read:
-            # Same rule as the list payload: a Calibre-column entry means
-            # Calibre's read flag is true, so it wins over a stale stored
-            # status and supplies the date when the store has none. Skipped
-            # only when the store already says read WITH a date, so the
-            # detail page can never disagree with the list.
-            col = calibre_read.calibre_column_statuses([book_id]).get(book_id)
-            if col:
-                status = "read"
-                if not date_read:
-                    date_read = col.get("date_read") or ""
         detail.reading_status = status
         detail.date_read = date_read
         return detail

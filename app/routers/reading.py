@@ -68,9 +68,13 @@ def current_reading(request: Request):
     from ..database import get_conn
     from .. import access, calibre_read
     allowed = access.restriction_for_request(request)
-    # A finished book (marked Read) should leave Currently Reading on its own,
-    # keeping its progress/stats — so exclude books that are now 'read'.
-    finished = calibre_read.read_book_ids([r["book_id"] for r in rows])
+    # A book THIS USER finished leaves Currently Reading on its own, keeping its
+    # progress/stats. Personal on purpose: someone else marking the same book
+    # read must not remove it from this list (see calibre_read.finished_for).
+    latest: dict = {}
+    for r in rows:
+        latest[r["book_id"]] = max(latest.get(r["book_id"]) or 0, r["updated_at"] or 0)
+    finished = calibre_read.finished_for(user.get("id"), latest)
 
     # One batched lookup (title/cover + genre predicate in SQL) instead of two
     # queries per progress row — the progress table grows with reading history.

@@ -54,6 +54,7 @@ class ShelfBook(BaseModel):
 
 
 from ..pg_database import get_pg as _pg
+from ..queries import native_cover_url
 
 
 _tables_ensured = False
@@ -220,7 +221,9 @@ def _resolve_smart_shelf(rules: dict, base_url: str, username: str = None, allow
         try:
             pg = _pg(); pcur = pg.cursor()
             pcur.execute(
-                """SELECT dm.book_id, kp.percentage
+                """SELECT dm.book_id, kp.percentage,
+                          EXTRACT(EPOCH FROM kp.updated_at)::bigint AS updated_at,
+                          (SELECT id FROM users u WHERE LOWER(u.username) = LOWER(kp.username) LIMIT 1) AS user_id
                    FROM kosync_progress kp JOIN document_map dm ON dm.document = kp.document
                    WHERE kp.username = %s AND dm.book_source = 'calibre'
                    ORDER BY kp.updated_at DESC""",
@@ -229,8 +232,12 @@ def _resolve_smart_shelf(rules: dict, base_url: str, username: str = None, allow
             prog = pcur.fetchall(); pg.close()
         except Exception:
             return []
-        # Finished books (marked Read) drop out of Currently Reading on their own.
-        finished = calibre_read.read_book_ids([p["book_id"] for p in prog])
+        # Books THIS USER finished drop out of Currently Reading on their own --
+        # same personal rule as /api/reading/current.
+        latest: dict = {}
+        for p in prog:
+            latest[p["book_id"]] = max(latest.get(p["book_id"]) or 0, p["updated_at"] or 0)
+        finished = calibre_read.finished_for(prog[0]["user_id"] if prog else None, latest)
         # Batched metadata fetch (genre predicate applied in SQL) instead of two
         # queries per progress row.
         ids, seen = [], set()
@@ -277,14 +284,14 @@ def _resolve_smart_shelf(rules: dict, base_url: str, username: str = None, allow
         if rules.get("status", "reading") == "reading" and allowed is None:
             try:
                 pg = _pg(); ncur = pg.cursor()
-                ncur.execute("SELECT id, title, author, cover_url FROM native_books WHERE reading_status = 'reading' ORDER BY updated_at DESC")
+                ncur.execute("SELECT id, title, author, cover_rev FROM native_books WHERE reading_status = 'reading' ORDER BY updated_at DESC")
                 for nb in ncur.fetchall():
-                    has_cover = bool(nb["cover_url"])
                     books.append(ShelfBook(
                         book_id=nb["id"], book_source="native", title=nb["title"] or "Untitled",
                         authors=[nb["author"]] if nb["author"] else [],
-                        has_cover=has_cover,
-                        cover_url=f"{base_url}/api/native/books/{nb['id']}/cover" if has_cover else None,
+                        # Native books always have a cover: the endpoint serves
+                        # the real one or a generated one (queries.native_cover_url).
+                        has_cover=True, cover_url=native_cover_url(base_url, nb),
                     ))
                 pg.close()
             except Exception:
@@ -321,7 +328,7 @@ def _resolve_smart_shelf(rules: dict, base_url: str, username: str = None, allow
                     # falling back to row-creation time — otherwise a bulk import makes
                     # every physical book look "added today" and floods this shelf,
                     # burying genuinely-recent digital books.
-                    ncur.execute("SELECT id, title, author, cover_url, "
+                    ncur.execute("SELECT id, title, author, cover_rev, "
                                  "EXTRACT(EPOCH FROM COALESCE(date_added, created_at)) AS ek "
                                  "FROM native_books ORDER BY COALESCE(date_added, created_at) DESC LIMIT %s", (limit,))
                     native = ncur.fetchall(); pg.close()
@@ -339,11 +346,10 @@ def _resolve_smart_shelf(rules: dict, base_url: str, username: str = None, allow
                     has_cover=hc, cover_url=f"{base_url}/api/covers/{row['id']}" if hc else None,
                     series_name=row["series_name"], series_index=row["series_index"])))
             for nb in native:
-                hc = bool(nb["cover_url"])
                 merged.append((float(nb["ek"] or 0), ShelfBook(
                     book_id=nb["id"], book_source="native", title=nb["title"] or "Untitled",
                     authors=[nb["author"]] if nb["author"] else [],
-                    has_cover=hc, cover_url=f"{base_url}/api/native/books/{nb['id']}/cover" if hc else None)))
+                    has_cover=True, cover_url=native_cover_url(base_url, nb))))
             merged.sort(key=lambda t: t[0], reverse=True)
             books = [b for _, b in merged[:limit]]
             rows = []
@@ -686,10 +692,7 @@ def _annotate_read_status(books: list) -> list:
     nat_ids = [b.book_id for b in books if b.book_source == "native"]
     cal_stat: dict = {}
     if cal_ids:
-        cal_stat = {bid: s.get("status") for bid, s in calibre_read.statuses(cal_ids).items()}
-        for bid, s in calibre_read.calibre_column_statuses(
-                [i for i in cal_ids if i not in cal_stat]).items():
-            cal_stat[bid] = s.get("status")
+        cal_stat = {bid: s["status"] for bid, s in calibre_read.effective(cal_ids).items()}
     nat_stat: dict = {}
     if nat_ids:
         try:
@@ -825,8 +828,9 @@ def get_shelf_books(shelf_id: int, request: Request):
                         book_id=nb["id"], book_source="native",
                         title=nb["title"],
                         authors=[nb["author"]] if nb["author"] else [],
-                        has_cover=bool(nb.get("cover_url")),
-                        cover_url=nb.get("cover_url"),
+                        # Never the raw column: that can be a `manual:` marker
+                        # or a third-party URL, neither of which a client can load.
+                        has_cover=True, cover_url=native_cover_url(base_url, nb),
                         added_at=entry["added_at"],
                         location=nb.get("location"),
                         has_digital=(nb.get("format") == "digital"),
