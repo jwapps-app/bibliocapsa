@@ -187,3 +187,27 @@ def test_unchanged_cover_url_does_not_destroy_the_cached_cover():
     import app.routers.native_books as nb
     src = " ".join(inspect.getsource(nb.update_native_book).split())
     assert "cover_changed" in src and src.index("conn.commit()") < src.index("os.remove(")
+
+
+# ── Accounts can be deleted -- but not the ones the library depends on ────────
+def test_delete_account_rules():
+    from app.routers.auth import _delete_blocker
+    me, owner = {"id": 5, "role": "admin"}, 1
+    assert _delete_blocker({"id": 5, "role": "admin"}, me, owner, 3)            # yourself
+    assert _delete_blocker({"id": 1, "role": "admin"}, me, owner, 3)            # the library owner
+    assert _delete_blocker({"id": 7, "role": "admin"}, me, owner, 1)            # the last admin
+    assert _delete_blocker({"id": 7, "role": "admin"}, me, owner, 2) is None
+    assert _delete_blocker({"id": 8, "role": "member"}, me, owner, 1) is None
+
+def test_delete_account_is_admin_only_and_scoped(client, as_user, tmp_path, monkeypatch):
+    from tests.conftest import MEMBER
+    as_user(MEMBER)
+    assert client.delete("/api/auth/users/1").status_code == 403
+    import app.routers.auth as ra, os
+    monkeypatch.setenv("WEBDAV_DIR", str(tmp_path))
+    (tmp_path / "kid").mkdir(); (tmp_path / "other").mkdir()
+    for hostile in ("..", ".", "", "../" + tmp_path.name, "kid/../other"):
+        ra._remove_webdav_folder(hostile)
+    assert (tmp_path / "kid").is_dir() and (tmp_path / "other").is_dir() and tmp_path.is_dir()
+    ra._remove_webdav_folder("kid")
+    assert not (tmp_path / "kid").exists() and (tmp_path / "other").is_dir()

@@ -36,7 +36,7 @@ export default function SettingsPage() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // ── Accounts ──
-  type Account = CurrentUser & { genres?: string[] };
+  type Account = CurrentUser & { genres?: string[]; can_delete?: boolean };
   const [user, setUser] = useState<CurrentUser | null>(null);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [allGenres, setAllGenres] = useState<string[]>([]);
@@ -208,6 +208,23 @@ export default function SettingsPage() {
       setMemberMsg(`Password reset for @${username}. Share it with them — it works for the web app and KOReader.`);
       setTimeout(() => setMemberMsg(null), 6000);
     } catch (e: any) { setMemberMsg(e.message ?? "Could not reset password"); }
+  };
+
+  const deleteAccount = async (a: Account) => {
+    if (!confirm(
+      `Delete the account @${a.username}?\n\n` +
+      "This permanently removes their sign-in, reading history, goals, wishlist, saved views, " +
+      "reading progress and private shelves. Books they added and shelves they shared stay in the library.\n\n" +
+      "This cannot be undone."
+    )) return;
+    try {
+      await api.deleteUser(a.id);
+      setAccounts(list => list.filter(x => x.id !== a.id));
+      // Who may be deleted can change with the list (e.g. the last admin).
+      fetch("/api/auth/users").then(r => r.ok ? r.json() : null).then(l => { if (l) setAccounts(l); }).catch(() => {});
+      setMemberMsg(`Deleted @${a.username}.`);
+      setTimeout(() => setMemberMsg(null), 4000);
+    } catch (e: any) { setMemberMsg(e.message ?? "Could not delete account"); }
   };
 
   const savePassword = async () => {
@@ -760,10 +777,20 @@ export default function SettingsPage() {
                           className="px-2 rounded-sm" style={{ color: "var(--parchment-dim)", fontFamily: "var(--mono)", fontSize: "0.7rem" }}>×</button>
                       </div>
                     ) : (
-                      <button onClick={() => setPwReset({ id: a.id, text: "" })}
-                        style={{ fontFamily: "var(--mono)", fontSize: "0.65rem", color: "var(--parchment-dim)" }} className="hover:underline">
-                        reset password
-                      </button>
+                      <div className="flex items-center gap-3">
+                        <button onClick={() => setPwReset({ id: a.id, text: "" })}
+                          style={{ fontFamily: "var(--mono)", fontSize: "0.65rem", color: "var(--parchment-dim)" }} className="hover:underline">
+                          reset password
+                        </button>
+                        {/* Not offered for yourself, the library owner, or the last admin
+                            (the server decides; it refuses those either way). */}
+                        {a.can_delete && (
+                          <button onClick={() => deleteAccount(a)}
+                            style={{ fontFamily: "var(--mono)", fontSize: "0.65rem", color: "#e08080" }} className="hover:underline">
+                            delete account
+                          </button>
+                        )}
+                      </div>
                     )}
                   </div>
                 </div>

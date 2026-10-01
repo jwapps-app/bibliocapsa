@@ -430,6 +430,10 @@ export const api = {
     });
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail ?? "Could not reset password");
   },
+  deleteUser: async (userId: number): Promise<void> => {
+    const res = await fetch(`/api/auth/users/${userId}`, { method: "DELETE" });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail ?? "Could not delete account");
+  },
   changePassword: async (new_password: string, current_password?: string): Promise<void> => {
     const res = await fetch("/api/auth/password", {
       method: "POST", headers: { "Content-Type": "application/json" },

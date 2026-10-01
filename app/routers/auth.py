@@ -317,9 +317,111 @@ def list_accounts(request: Request):
             ORDER BY u.id
             """
         )
-        return cur.fetchall()
+        rows = [dict(r) for r in cur.fetchall()]
     finally:
         conn.close()
+    # Tell the UI which rows may be removed, using the same rule the delete
+    # route enforces (so the button and the server can't disagree).
+    owner = _library_owner_id()
+    admins = sum(1 for r in rows if r["role"] == "admin")
+    for r in rows:
+        r["can_delete"] = _delete_blocker(r, requester, owner, admins) is None
+    return rows
+
+
+def _library_owner_id():
+    try:
+        from .. import calibre_read
+        return calibre_read.library_owner_id()
+    except Exception:
+        return None
+
+
+def _delete_blocker(target: dict, requester: dict, owner_id, admin_count: int):
+    """Why this account can't be deleted, or None if it can."""
+    if target["id"] == requester["id"]:
+        return "You can't delete the account you're signed in with"
+    if target["id"] == owner_id:
+        # The library's shared read state (Calibre's read column, imported
+        # Goodreads history) is this account's reading. Deleting it would hand
+        # that history to whichever account came next.
+        return "This is the library owner's account and can't be deleted"
+    if target.get("role") == "admin" and admin_count <= 1:
+        return "The last admin account can't be deleted"
+    return None
+
+
+@router.delete("/users/{user_id}", summary="Delete an account and its personal data (admin only)")
+def delete_account(user_id: int, request: Request):
+    """Remove an account for good, with everything that was personal to it:
+    sessions, genre access, reading history, goals, wishlist, saved views,
+    reading progress, KOReader sync positions and uploaded statistics, and its
+    private shelves. What it contributed to the SHARED library stays: books it
+    added, loans it recorded, and shelves it shared (those pass to the admin
+    doing the deleting). One transaction -- it all goes, or nothing does."""
+    requester = _require_admin(request)
+    conn = _pg()
+    username = None
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, username, role FROM users WHERE id = %s FOR UPDATE", (user_id,))
+        target = cur.fetchone()
+        if not target:
+            raise HTTPException(status_code=404, detail="User not found")
+        cur.execute("SELECT COUNT(*) AS c FROM users WHERE role = 'admin' AND password_hash IS NOT NULL")
+        blocker = _delete_blocker(dict(target), requester, _library_owner_id(), cur.fetchone()["c"])
+        if blocker:
+            raise HTTPException(status_code=409, detail=blocker)
+        username = target["username"]
+
+        # Private shelves go with their owner; shared ones belong to everyone,
+        # so they stay and pass to the admin performing the delete.
+        cur.execute("DELETE FROM shelf_books WHERE shelf_id IN "
+                    "(SELECT id FROM shelves WHERE owner_id = %s AND NOT COALESCE(is_shared, FALSE))", (user_id,))
+        cur.execute("DELETE FROM shelves WHERE owner_id = %s AND NOT COALESCE(is_shared, FALSE)", (user_id,))
+        cur.execute("UPDATE shelves SET owner_id = %s WHERE owner_id = %s", (requester["id"], user_id))
+        # Shared-library records keep existing, just without the attribution.
+        cur.execute("UPDATE native_books SET owner_id = NULL WHERE owner_id = %s", (user_id,))
+        cur.execute("UPDATE native_books SET added_by = NULL WHERE added_by = %s", (user_id,))
+        cur.execute("UPDATE lending SET lent_by = NULL WHERE lent_by = %s", (user_id,))
+        # Personal data without ON DELETE CASCADE (the rest cascades from users).
+        cur.execute("DELETE FROM reading_progress WHERE user_id = %s", (user_id,))
+        if username:
+            # KOReader positions are keyed by username: left behind, a future
+            # account reusing the name would inherit this person's reading.
+            cur.execute("DELETE FROM kosync_progress WHERE LOWER(username) = LOWER(%s)", (username,))
+        cur.execute("DELETE FROM users WHERE id = %s", (user_id,))
+        conn.commit()
+    except HTTPException:
+        raise
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        import logging
+        logging.getLogger(__name__).error("delete account %s failed: %s", user_id, e, exc_info=True)
+        raise HTTPException(status_code=503, detail="Could not delete the account; nothing was changed")
+    finally:
+        conn.close()
+    auth.invalidate_user_sessions(user_id)  # signed out everywhere, immediately
+    _remove_webdav_folder(username)
+    return {"ok": True}
+
+
+def _remove_webdav_folder(username) -> None:
+    """Best-effort: the account's KOReader statistics uploads (WEBDAV_DIR/<name>)."""
+    import os, shutil
+    # The name must be ONE plain path component: "kid/../other" resolves to a
+    # direct child of the root too -- somebody else's folder.
+    if not username or username in (".", "..") or os.path.basename(username) != username:
+        return
+    root = os.path.realpath(os.getenv("WEBDAV_DIR", "/app/webdav"))
+    path = os.path.realpath(os.path.join(root, username))
+    # Only ever a direct child of the WebDAV root -- never the root itself or
+    # anything a symlink could point outside it.
+    if os.path.dirname(path) == root and os.path.isdir(path):
+        shutil.rmtree(path, ignore_errors=True)
 
 
 from ..auth import require_admin as _require_admin
