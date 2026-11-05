@@ -43,7 +43,7 @@ def _book_entries(conn, base: str, rows, now: str) -> str:
         ph = ",".join("?" * len(chunk))
         for r in conn.execute(
             f"SELECT bal.book AS book, a.name FROM books_authors_link bal JOIN authors a ON a.id = bal.author "
-            f"WHERE bal.book IN ({ph}) ORDER BY bal.book, a.sort", chunk):
+            f"WHERE bal.book IN ({ph}) ORDER BY bal.book, bal.id", chunk):  # Calibre's own author order
             authors[r["book"]].append(r["name"])
         for r in conn.execute(
             f"SELECT book, format FROM data WHERE book IN ({ph}) ORDER BY book, format", chunk):

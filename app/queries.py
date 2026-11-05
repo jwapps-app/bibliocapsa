@@ -37,14 +37,25 @@ def _parse_dt(val) -> Optional[datetime]:
     return None
 
 
+def _parse_pubdate(val) -> Optional[datetime]:
+    """A book's publication date, or None when Calibre has none. Calibre can't
+    store "no date": it writes 0101-01-01 instead, and passing that through
+    showed "Published: 101" (or 100, west of Greenwich) on every undated book."""
+    dt = _parse_dt(val)
+    return None if dt is not None and dt.year <= 101 else dt
+
+
 def fetch_authors_for_book(conn: sqlite3.Connection, book_id: int) -> list[Author]:
+    # In Calibre's own order (the link row order = the order on the title page:
+    # "Heath & Chester-Robinson"), not alphabetical -- sorting by name put a
+    # contributor ahead of the principal author.
     rows = conn.execute(
         """
         SELECT a.id, a.name, a.sort
         FROM authors a
         JOIN books_authors_link bal ON bal.author = a.id
         WHERE bal.book = ?
-        ORDER BY a.sort
+        ORDER BY bal.id
         """,
         (book_id,),
     ).fetchall()
@@ -145,7 +156,7 @@ def row_to_summary(conn: sqlite3.Connection, row: sqlite3.Row, base_url: str, ow
         authors=fetch_authors_for_book(conn, book_id),
         series=fetch_series_for_book(conn, book_id),
         tags=fetch_tags_for_book(conn, book_id),
-        pubdate=_parse_dt(row["pubdate"]),
+        pubdate=_parse_pubdate(row["pubdate"]),
         last_modified=_parse_dt(row["last_modified"]),
         has_cover=has_cover,
         cover_url=f"{base_url}/api/covers/{book_id}" if has_cover else None,
@@ -183,7 +194,7 @@ def row_to_detail(conn: sqlite3.Connection, row: sqlite3.Row, base_url: str) -> 
         authors=fetch_authors_for_book(conn, book_id),
         series=fetch_series_for_book(conn, book_id),
         tags=fetch_tags_for_book(conn, book_id),
-        pubdate=_parse_dt(row["pubdate"]),
+        pubdate=_parse_pubdate(row["pubdate"]),
         last_modified=_parse_dt(row["last_modified"]),
         has_cover=has_cover,
         cover_url=f"{base_url}/api/covers/{book_id}" if has_cover else None,
@@ -232,7 +243,7 @@ def _related(conn: sqlite3.Connection, book_ids) -> dict:
         # Same ORDER BY as the per-book queries, per book.
         for r in conn.execute(
             f"SELECT bal.book AS book, a.id, a.name, a.sort FROM books_authors_link bal "
-            f"JOIN authors a ON a.id = bal.author WHERE bal.book IN ({ph}) ORDER BY bal.book, a.sort",
+            f"JOIN authors a ON a.id = bal.author WHERE bal.book IN ({ph}) ORDER BY bal.book, bal.id",
             chunk,
         ):
             out[r["book"]]["authors"].append(Author(id=r["id"], name=r["name"], sort=r["sort"]))
@@ -328,7 +339,7 @@ def summaries_for_rows(conn: sqlite3.Connection, rows, base_url: str, ownership_
             authors=x["authors"],
             series=x["series"],
             tags=x["tags"],
-            pubdate=_parse_dt(row["pubdate"]),
+            pubdate=_parse_pubdate(row["pubdate"]),
             last_modified=_parse_dt(row["last_modified"]),
             has_cover=has_cover,
             cover_url=f"{base_url}/api/covers/{bid}" if has_cover else None,
@@ -364,7 +375,7 @@ def details_for_rows(conn: sqlite3.Connection, rows, base_url: str, ownership_ma
             authors=x["authors"],
             series=x["series"],
             tags=x["tags"],
-            pubdate=_parse_dt(row["pubdate"]),
+            pubdate=_parse_pubdate(row["pubdate"]),
             last_modified=_parse_dt(row["last_modified"]),
             has_cover=has_cover,
             cover_url=f"{base_url}/api/covers/{bid}" if has_cover else None,

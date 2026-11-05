@@ -290,15 +290,23 @@ def sync_book(book_id: int, fields: dict, library: str = LIBRARY,
 def add_upload_to_calibre(rec: dict, library: str = LIBRARY) -> tuple[bool, str]:
     """Import a pending uploaded file into Calibre via `calibredb add`, then apply
     any user-entered title/authors. Returns (ok, output)."""
+    ok, out, _ = _add_upload(rec, library)
+    return ok, out
+
+
+def _add_upload(rec: dict, library: str = LIBRARY) -> tuple[bool, str, Optional[int]]:
+    """add_upload_to_calibre, also returning the new Calibre book id -- None when
+    calibredb added nothing (it skips a book whose title and authors are already
+    in the library, and still exits 0)."""
     from . import calibre_overlay as overlay
     path = os.path.join(overlay.UPLOADS_DIR, rec["filename"])
     if not os.path.isfile(path):
-        return False, "uploaded file missing"
+        return False, "uploaded file missing", None
     try:
         proc = subprocess.run([CALIBREDB, "add", path, *_target_args(library)],
                               capture_output=True, text=True, timeout=300)
         if proc.returncode != 0:
-            return False, _explain((proc.stderr or proc.stdout or "calibredb add failed").strip())
+            return False, _explain((proc.stderr or proc.stdout or "calibredb add failed").strip()), None
         out = (proc.stdout or "").strip()
         m = re.search(r"Added book ids?:\s*([0-9,]+)", out)
         new_id = m.group(1).split(",")[0] if m else None
@@ -326,9 +334,85 @@ def add_upload_to_calibre(rec: dict, library: str = LIBRARY) -> tuple[bool, str]
                     except Exception:
                         logger.exception("could not queue metadata for new book %s", new_id)
                     out += f" | metadata not applied yet (queued as a pending edit): {_explain(out2)}"
-        return True, out
+        return True, out, int(new_id) if new_id else None
     except Exception as e:
-        return False, str(e)
+        return False, str(e), None
+
+
+class UploadNotAdded(Exception):
+    """add_upload_now could not put the file into Calibre. `kind` is 'busy',
+    'unreachable', 'duplicate' or 'failed'."""
+    def __init__(self, kind: str, detail: str):
+        super().__init__(detail)
+        self.kind, self.detail = kind, detail
+
+
+def add_upload_now(rec: dict, library: str = LIBRARY) -> dict:
+    """Add ONE uploaded file to Calibre right now and say which book it became:
+    {"book_id": int, "duplicate": bool}. Raises UploadNotAdded otherwise.
+
+    For the "import a book" flow, where the client needs the new book's id back
+    so it can treat its own copy as that Calibre book. Deliberately not a full
+    Sync: nothing else in the pending queue -- other uploads, edits, enrichment
+    proposals waiting for review -- is touched.
+
+    Same write discipline as run_sync: the shared write lock, and the search
+    indexer stood down while calibredb writes. It WAITS for the lock (an
+    auto-sync job holds it for a second or two) rather than failing at once."""
+    if not _calibre_write_lock.acquire(timeout=90):
+        raise UploadNotAdded("busy", "Calibre is busy with another sync. Try again in a moment.")
+    try:
+        try:
+            from . import search_index
+            search_index.pause_for_calibre_write()
+        except Exception:
+            search_index = None
+        try:
+            ok, out, new_id = _add_upload(rec, library)
+        finally:
+            if search_index is not None:
+                try:
+                    search_index.resume_after_calibre_write()
+                except Exception:
+                    pass
+    finally:
+        _calibre_write_lock.release()
+    if not ok:
+        raise UploadNotAdded("unreachable" if _is_unreachable(out) else "failed", out)
+    if new_id:
+        return {"book_id": new_id, "duplicate": False}
+    # calibredb added nothing: the library already has this title + authors.
+    existing = _find_existing_book(rec.get("title"), rec.get("authors"))
+    if existing:
+        return {"book_id": existing, "duplicate": True}
+    raise UploadNotAdded("duplicate", "Calibre already has a book with this title and author, "
+                                      "so it was not added again.")
+
+
+def _find_existing_book(title: Optional[str], authors: Optional[str]) -> Optional[int]:
+    """The ONE Calibre book with this title whose authors agree, or None when
+    there is no such book or more than one (never guess between candidates)."""
+    from . import textmatch
+    from .database import get_conn
+    want = textmatch.norm(title)
+    if not want:
+        return None
+    names = [a.strip() for a in re.split(r"\s*&\s*|\s*;\s*", authors or "") if a.strip()]
+    try:
+        with get_conn() as cal:
+            hits = []
+            for r in cal.execute("SELECT id, title FROM books").fetchall():
+                if textmatch.norm(r["title"]) != want:
+                    continue
+                theirs = [a["name"].replace("|", ",") for a in cal.execute(
+                    "SELECT a.name FROM authors a JOIN books_authors_link l ON l.author = a.id "
+                    "WHERE l.book = ?", (r["id"],)).fetchall()]
+                if textmatch.authors_agree(names, theirs) is not False:
+                    hits.append(r["id"])
+        return hits[0] if len(hits) == 1 else None
+    except Exception:
+        logger.exception("could not look up an existing book for %r", title)
+        return None
 
 
 # ── Optional: apply edits to Calibre as they're saved ────────────────────────

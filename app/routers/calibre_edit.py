@@ -322,7 +322,12 @@ def pending_count(request: Request):
 
 
 @router.post("/upload", summary="Upload a new book to queue for Calibre (admin)")
-def upload_book(request: Request, file: UploadFile = File(...)):
+def upload_book(
+    request: Request,
+    file: UploadFile = File(...),
+    apply: bool = Query(False, description="Add the file to Calibre now instead of queueing it, and "
+                                           "return the Calibre book it became as `book_id`."),
+):
     # A plain `def` on purpose: this runs `ebook-meta` (a Calibre process that
     # can take many seconds on a large PDF), writes up to 300 MB to disk and
     # talks to Postgres. As an `async def` all of that ran ON the event loop and
@@ -366,7 +371,24 @@ def upload_book(request: Request, file: UploadFile = File(...)):
     if not title or title == os.path.splitext(stored)[0]:
         title = os.path.splitext(file.filename or "Untitled")[0]
     rec = overlay.add_upload(stored, file.filename, title, authors, ext, size)
-    return rec
+    if not apply:
+        return rec
+    # apply=true: straight into Calibre, all or nothing. Whether it worked or
+    # not the file leaves the queue -- on success it is in the library; on
+    # failure the client still holds its own copy and retries, and a stray
+    # queued duplicate would be added a second time by the next Sync.
+    try:
+        result = calibre_sync.add_upload_now(rec)
+    except calibre_sync.UploadNotAdded as e:
+        # 424, not 5xx: the app scrubs every 5xx detail to "Internal server
+        # error", and the admin doing the import needs Calibre's actual reason
+        # ("Forbidden" = content server not started with writes enabled, ...) --
+        # the same text the Sync page already shows them.
+        status = 409 if e.kind in ("busy", "duplicate") else 424
+        raise HTTPException(status_code=status, detail=e.detail)
+    finally:
+        overlay.discard_upload(rec["id"])
+    return {**rec, "applied": True, **result}
 
 
 @router.get("/uploads", summary="Pending uploads (admin)")
