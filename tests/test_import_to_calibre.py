@@ -124,3 +124,21 @@ def test_undefined_pubdate_is_none_and_authors_keep_calibres_order(client):
         assert listed[911]["pubdate"] is None and [a["name"] for a in listed[911]["authors"]][0] == "Richard Heath"
     finally:
         c = _lib(); c.executescript("DELETE FROM books WHERE id IN (911,912); DELETE FROM authors WHERE id IN (911,912); DELETE FROM books_authors_link WHERE book IN (911,912);"); c.commit(); c.close()
+
+
+# ── Cover thumbnails: Pillow only ever decodes what a Calibre cover can be ────
+def test_thumbnailer_refuses_other_formats_disguised_as_a_cover(tmp_path, monkeypatch):
+    from PIL import Image
+    import app.routers.covers as cv
+    monkeypatch.setattr(cv, "THUMB_DIR", str(tmp_path / "thumbs"))
+    real = tmp_path / "cover.jpg"
+    Image.new("RGB", (900, 1350), "navy").save(real, "JPEG")
+    out = cv._thumb_for(str(real), 1, 300)
+    with Image.open(out) as im:
+        assert im.format == "JPEG" and im.width == 300
+    for fmt in ("TIFF", "GIF", "BMP"):                       # content sniffing must not reach these decoders
+        fake = tmp_path / fmt / "cover.jpg"
+        fake.parent.mkdir()
+        Image.new("RGB", (900, 1350), "navy").save(fake, fmt)
+        assert cv._thumb_for(str(fake), 2, 300) is None      # caller then serves the original file as-is
+    assert sorted(p.name for p in (tmp_path / "thumbs").iterdir()) == ["1_300.jpg"]

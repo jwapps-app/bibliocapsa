@@ -34,7 +34,12 @@ def _thumb_for(cover_path: str, book_id: int, w: int):
         if os.path.isfile(thumb) and os.path.getmtime(thumb) >= src_mtime:
             return thumb
         os.makedirs(THUMB_DIR, exist_ok=True)
-        with Image.open(cover_path) as im:
+        # Only the formats a Calibre cover can be. Left open, Pillow sniffs the
+        # file's content and will run ANY of its ~40 decoders on a file merely
+        # named cover.jpg -- TIFF, EPS/Ghostscript, FlashPix, PDF... which is
+        # where nearly all of its memory-safety advisories live. Anything else
+        # fails here and is served as the original file, untouched by Pillow.
+        with Image.open(cover_path, formats=("JPEG", "PNG")) as im:
             if im.width <= w:  # never upscale — serve the original
                 return None
             im = im.convert("RGB")
